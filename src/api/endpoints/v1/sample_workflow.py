@@ -18,5 +18,6 @@ async def sample_workflow_endpoint(query: str = ""):
                 "original_transcript": query
             }
         )
-    return result["subagent_response"]
+
+    return result
     

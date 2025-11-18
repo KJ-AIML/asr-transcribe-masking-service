@@ -50,16 +50,18 @@ def build_workflow() -> Any:
     builder.add_node("synthesizer", synthesizer)
 
     # Add edges to connect nodes
-    builder.add_edge(START, "llm_call_context_improver")
-    builder.add_edge("llm_call_context_improver", "llm_call_self_checker")
-    builder.add_conditional_edges(
-        "llm_call_self_checker",
-        route_check,
-        {
-            "Accepted": "llm_call_sensitive_data_classify",
-            "Rejected": "llm_call_context_improver",
-        },
-    )
+    builder.add_edge(START, "llm_call_sensitive_data_classify")
+    # builder.add_edge("llm_call_context_improver", "llm_call_self_checker")
+    # builder.add_conditional_edges(
+    #     "llm_call_self_checker",
+    #     route_check,
+    #     {
+    #         "Accepted": "llm_call_sensitive_data_classify",
+    #         "Rejected": "llm_call_context_improver",
+    #     },
+    # )
+
+    # builder.add_edge("llm_call_sensitive_data_classify", END)
 
     builder.add_conditional_edges(
         "llm_call_sensitive_data_classify",

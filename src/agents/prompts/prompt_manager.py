@@ -8,7 +8,7 @@ logger = get_logger(__name__)
 class PromptManager:
     def __init__(self, prompt_base_path: Optional[str] = None):
         # Base path for prompt files
-        self.prompt_base_path = Path(prompt_base_path) if prompt_base_path else Path("./prompt")
+        self.prompt_base_path = Path(prompt_base_path) if prompt_base_path else Path("src/agents/prompts")
         
         # Cache for loaded prompts
         self._subagents: Optional[Dict[str, Any]] = None
@@ -18,19 +18,19 @@ class PromptManager:
         
         # Subagent configurations
         self._subagent_configs = [
-            {"name": "agent_name", "description": "ทำงานด้าน Name", "file": "agents/agent_name.md"},
-            {"name": "agent_id_card", "description": "ทำงานด้าน ID Card", "file": "agents/agent_id_card.md"},
-            {"name": "agent_dob", "description": "ทำงานด้าน DOB", "file": "agents/agent_dob.md"},
-            {"name": "agent_phone", "description": "ทำงานด้าน Phone", "file": "agents/agent_phone.md"},
-            {"name": "agent_address", "description": "ทำงานด้าน Address", "file": "agents/agent_address.md"},
-            {"name": "agent_email", "description": "ทำงานด้าน Email", "file": "agents/agent_email.md"},
-            {"name": "agent_coverage", "description": "ทำงานด้าน Coverage", "file": "agents/agent_coverage.md"},
-            {"name": "agent_premium", "description": "ทำงานด้าน Premium", "file": "agents/agent_premium.md"},
+            # {"name": "agent_name", "description": "ทำงานด้าน Name", "file": "agents/agent_name.md"},
+            # {"name": "agent_id_card", "description": "ทำงานด้าน ID Card", "file": "agents/agent_id_card.md"},
+            # {"name": "agent_dob", "description": "ทำงานด้าน DOB", "file": "agents/agent_dob.md"},
+            # {"name": "agent_phone", "description": "ทำงานด้าน Phone", "file": "agents/agent_phone.md"},
+            # {"name": "agent_address", "description": "ทำงานด้าน Address", "file": "agents/agent_address.md"},
+            # {"name": "agent_email", "description": "ทำงานด้าน Email", "file": "agents/agent_email.md"},
+            # {"name": "agent_coverage", "description": "ทำงานด้าน Coverage", "file": "agents/agent_coverage.md"},
+            # {"name": "agent_premium", "description": "ทำงานด้าน Premium", "file": "agents/agent_premium.md"},
             {"name": "agent_payment", "description": "ทำงานด้าน Payment", "file": "agents/agent_payment.md"},
-            {"name": "agent_license", "description": "ทำงานด้าน License", "file": "agents/agent_license.md"},
-            {"name": "agent_health", "description": "ทำงานด้าน Health", "file": "agents/agent_health.md"},
-            {"name": "agent_beneficiary", "description": "ทำงานด้าน Beneficiary", "file": "agents/agent_beneficiary.md"},
-            {"name": "agent_other", "description": "ทำงานด้าน Other", "file": "agents/agent_other.md"}
+            # {"name": "agent_license", "description": "ทำงานด้าน License", "file": "agents/agent_license.md"},
+            # {"name": "agent_health", "description": "ทำงานด้าน Health", "file": "agents/agent_health.md"},
+            # {"name": "agent_beneficiary", "description": "ทำงานด้าน Beneficiary", "file": "agents/agent_beneficiary.md"},
+            # {"name": "agent_other", "description": "ทำงานด้าน Other", "file": "agents/agent_other.md"}
         ]
     
     @property

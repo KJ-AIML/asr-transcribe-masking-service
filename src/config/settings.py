@@ -11,6 +11,10 @@ class Settings(BaseSettings):
     OPENAI_MODEL_BASIC: str | None = None
     OPENAI_MODEL_REASONING: str | None = None
 
+    INFERENCE_SERVER_URL: str | None = None
+    INFERENCE_SERVER_API_KEY: str | None = None
+    INFERENCE_SERVER_MODEL_BASIC: str | None = None
+
     # Environment settings
     DEBUG: bool = False
     SECRET_KEY: str = "your-default-secret-key"

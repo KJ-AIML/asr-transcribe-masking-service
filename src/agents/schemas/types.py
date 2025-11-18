@@ -13,11 +13,15 @@ class State(TypedDict):
     sensitive_data_detected: dict
     subagent_response: dict
     completed_results: Annotated[list, operator.add]
+    text_and_segment: dict
+    chunk_data: dict
+    segments: list
 
 class WorkerState(TypedDict):
     agent_name: str
     pii_info: list
     transcript: dict
+    text_and_segment: dict
     completed_results: Annotated[list, operator.add]
 
 class TranscriptLine(BaseModel):
@@ -43,7 +47,7 @@ class LineRef(BaseModel):
 class Issue(BaseModel):
     issue_type: str
     severity: Literal["critical", "major", "minor"]
-    line_index: int
+    segment_index: int
     line_ref: LineRef
     problem: str
     expected: str
@@ -80,96 +84,66 @@ class SelfCheckerResult(BaseModel):
 # Sensitive Data State
 
 AgentName = Literal[
-    "Agent_Name",
-    "Agent_ID_Card",
-    "Agent_DOB",
-    "Agent_Phone",
-    "Agent_Address",
-    "Agent_Email",
-    "Agent_Coverage",
-    "Agent_Premium",
     "Agent_Payment",
-    "Agent_License",
-    "Agent_Health",
-    "Agent_Spelling",
-    "Agent_Beneficiary",
-    "Agent_Other",
 ]
 
 PriorityLevel = Literal["CRITICAL", "MEDIUM", "LOW"]
 
 PIICategory = Literal[
-    "CUSTOMER_NAME",
-    "ID_CARD",
-    "DOB",
-    "PHONE",
-    "ADDRESS",
-    "EMAIL",
-    "COVERAGE",
-    "PREMIUM",
     "PAYMENT",
-    "LICENSE",
-    "HEALTH",
-    "BENEFICIARY",
-    "OTHER",
 ]
+
+class DigitGroup(BaseModel):
+    segment_id: int = Field(..., description="Segment ID where this digit group appears")
+    text: str = Field(..., description="Original Thai text from transcript")
+    arabic: str = Field(..., description="Converted to Arabic numerals")
 
 class TimestampRange(BaseModel):
     start: float = Field(..., description="Start time in seconds")
     end: float = Field(..., description="End time in seconds")
 
-class EstimatedLocation(BaseModel):
-    line_index: int = Field(..., description="Index of the line in the chunk (0-based or the format you use)")
-    timestamp_range: TimestampRange
+class CreditCardSection(BaseModel):
+    section_type: Literal[
+        "SEQUENTIAL_SPELLING", "FULL_MENTION", "AGENT_CONFIRMATION",
+        "EXPIRY_DATE", "CVV"
+    ] = Field(..., description="Type of credit card PII detected")
+    detection_method: str = Field(..., description="How the PII was detected")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="Detection confidence 0-1")
+    evidence: list[str] = Field(..., description="Specific evidence supporting the detection")
+    segment_ids: list[int] = Field(..., description="Which segments contain this PII")
+    line_indices: list[int] = Field(..., description="Line numbers for reference")
+    start_segment_id: int = Field(..., description="First segment ID where PII appears")
+    end_segment_id: int = Field(..., description="Last segment ID where PII appears")
+    timestamp_range: TimestampRange = Field(..., description="Time range of the PII section")
+    total_digits_detected: int | None = Field(None, description="Total number of digits in the detected sequence")
+    digit_groups: list[DigitGroup] | None = Field(None, description="Each digit group with Thai text and Arabic conversion")
+    acknowledgment_segments: list[int] | None = Field(None, description="Agent acknowledgment segments between digit groups")
 
 class RoutingDecision(BaseModel):
-    has_sensitive_data: bool = Field(..., description="Whether sensitive data was found")
-    confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence score 0-1")
-    reasoning: str = Field(..., description="Brief explanation of the decision")
-
-class DetectedPIICategory(BaseModel):
-    category: PIICategory
-    confidence: float = Field(..., ge=0.0, le=1.0)
-    evidence: List[str] = Field(..., description="Evidence/text supporting the detection")
-    required_agent: AgentName = Field(..., description="Agent required to handle this PII category")
-    priority: PriorityLevel
-    estimated_locations: List[EstimatedLocation] = Field(
-        default_factory=list,
-        description="Locations where PII is expected to appear"
-    )
+    has_credit_card_data: bool = Field(..., description="True if ANY credit card PII detected")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="Overall confidence in routing decision")
+    reasoning: str = Field(..., description="Detailed explanation of ALL detected evidence")
 
 class RoutingPlan(BaseModel):
-    parallel_agents: List[AgentName] = Field(default_factory=list, description="Agents that can run in parallel")
-    sequential_agents: List[AgentName] = Field(default_factory=list, description="Agents that must run sequentially")
-    skip_agents: List[AgentName] = Field(default_factory=list, description="Agents that are not needed")
+    route_to_payment_agent: bool = Field(..., description="True if credit card data found")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence in routing plan")
+    skip_other_agents: list[str] = Field(default_factory=list, description="List of agents to skip (PCI-DSS compliance)")
 
-class PIIScanStatistics(BaseModel):
-    total_categories_detected: int
-    critical_priority: int
-    medium_priority: int
-    low_priority: int
-    estimated_pii_count: int
+class Statistics(BaseModel):
+    total_sections_detected: int = Field(..., description="Total PII sections found")
+    sequential_spelling_sections: int = Field(..., description="Count of sequential spelling sections")
+    full_mention_sections: int = Field(default=0, description="Count of full number mentions")
+    confirmation_sections: int = Field(default=0, description="Count of agent confirmations")
+    expiry_date_sections: int = Field(default=0, description="Count of expiry date discussions")
+    total_segments_with_pii: int = Field(..., description="Unique segments containing PII")
+    estimated_pii_items: int = Field(..., description="Estimated total PII items (for prioritization)")
 
-class ChunkPIIResult(BaseModel):
-    """Result for one chunk (chunk_id as string to support both 'chunk_001' or numeric)"""
-    chunk_id: str
-    routing_decision: RoutingDecision
-    pii_categories_detected: List[DetectedPIICategory] = Field(default_factory=list)
-    routing_plan: RoutingPlan
-    statistics: PIIScanStatistics
-
-class SensitiveDataDetectorOutput(BaseModel):
-    """Combined output for the PII detection and routing stage"""
-    results: List[ChunkPIIResult] = Field(..., description="List of results per chunk")
-    # Overall summary for the job (if needed)
-    overall_has_sensitive_data: bool = Field(
-        ...,
-        description="true if at least one chunk contains PII"
-    )
-    overall_priority: PriorityLevel = Field(
-        ...,
-        description="Highest priority level found in this job"
-    )
+class ChunkAnalysis(BaseModel):
+    chunk_id: str = Field(..., description="Must match exactly the chunk_id from input JSON")
+    routing_decision: RoutingDecision = Field(..., description="Overall routing decision for this chunk")
+    credit_card_sections: list[CreditCardSection] = Field(..., description="All detected credit card PII sections")
+    routing_plan: RoutingPlan = Field(..., description="Which agents should process this chunk")
+    statistics: Statistics = Field(..., description="Summary statistics for this chunk")
 
 #PII State
 
@@ -208,14 +182,47 @@ class PIIWorkerStatistics(BaseModel):
     censoring_required: int = Field(..., description="Number of detections marked for censoring")
     processing_time_ms: Optional[float] = Field(None, description="Processing time in milliseconds")
 
+class MaskingResult(BaseModel):
+    """Single masking result from Agent_Payment"""
+    type: Literal["card_number", "expiration_date", "cvv"] = Field(..., description="Type of PII masked")
+    original_text: str = Field(..., description="Original text before masking")
+    masked_text: str = Field(..., description="Text after masking")
+    start_time: float = Field(..., description="Start timestamp in seconds")
+    end_time: float = Field(..., description="End timestamp in seconds")
+    segment_ids: List[int] = Field(..., description="Segment IDs where masking was applied")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="Masking confidence 0-1")
+    category: Literal["Success Mask", "Success Partial", "Success Overmask", "Fail Overmask", "Missing Mask", "Wrong Mask", "No Card"] = Field(..., description="Masking quality category")
+
+class MaskingSummary(BaseModel):
+    """Summary statistics for masking operations"""
+    total_masked: int = Field(..., description="Total masking operations performed")
+    success_mask: int = Field(..., description="Count of complete masking operations")
+    success_partial: int = Field(..., description="Count of PCI DSS compliant partial masking")
+    overmask_issues: int = Field(..., description="Count of overmasking problems")
+    missing_mask: int = Field(..., description="Count of security failures")
+    wrong_mask: int = Field(..., description="Count of false positive maskings")
+
+class AgentPaymentOutput(BaseModel):
+    """Output from Agent_Payment worker with split utterance handling"""
+    chunk_id: str = Field(..., description="Chunk identifier")
+    masking_results: List[MaskingResult] = Field(..., description="List of masking operations performed")
+    summary: MaskingSummary = Field(..., description="Summary statistics for masking operations")
+
 class PIIWorkerOutput(BaseModel):
     """Output from a single PII worker agent"""
     agent_name: AgentName = Field(..., description="Name of the agent that processed this")
     category: PIICategory = Field(..., description="PII category this agent specializes in")
     
+    # Legacy field for backward compatibility
     detections: List[PIIDetection] = Field(
         default_factory=list,
         description="List of all PII instances detected"
+    )
+    
+    # New field for Agent_Payment split utterance handling
+    masking_results: Optional[AgentPaymentOutput] = Field(
+        default=None,
+        description="Masking results from Agent_Payment with split utterance handling"
     )
     
     statistics: PIIWorkerStatistics

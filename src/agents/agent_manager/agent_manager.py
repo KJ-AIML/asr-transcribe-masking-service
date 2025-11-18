@@ -2,8 +2,9 @@ from typing import Optional, Dict, Any
 from src.agents.schemas.types import (
     Agent1Output, 
     SelfCheckerResult, 
-    SensitiveDataDetectorOutput, 
-    PIIWorkerOutput
+    ChunkAnalysis, 
+    PIIWorkerOutput,
+    AgentPaymentOutput
 )
 from src.models.langchain_model_loader import LangchainModelLoader
 from src.config.logs_config import get_logger
@@ -20,8 +21,9 @@ class AgentManager:
         self._agent_names = {
             "context_improver": Agent1Output,
             "self_checker": SelfCheckerResult,
-            "sensitive_data_detector": SensitiveDataDetectorOutput,
+            "sensitive_data_detector": ChunkAnalysis,
             "pii_sub_agent_worker": PIIWorkerOutput,
+            "agent_payment": AgentPaymentOutput,
         }
 
     @property
@@ -29,7 +31,7 @@ class AgentManager:
         """Lazy load the model"""
         if self._model is None:
             try:
-                self._model = self.model_loader.init_model_openai_basic()
+                self._model = self.model_loader.init_chat_model_inference_server(temperature=0.3)
                 logger.info("Model initialized successfully")
             except Exception as e:
                 logger.error(f"Failed to initialize model: {e}")
@@ -77,6 +79,11 @@ class AgentManager:
     def pii_sub_agent_worker(self):
         """Get the PII sub agent worker"""
         return self.get_agent("pii_sub_agent_worker")
+    
+    @property
+    def agent_payment(self):
+        """Get the Agent Payment worker"""
+        return self.get_agent("agent_payment")
 
     def list_available_agents(self) -> list:
         """List all available agent names"""
