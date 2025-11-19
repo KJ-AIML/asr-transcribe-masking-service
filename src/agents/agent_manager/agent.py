@@ -5,12 +5,12 @@ from src.agents.prompts.sample_agent_prompt import get_prompt_sample_agent
 
 loader = LangchainModelLoader()
 
-inference_server_model = loader.init_chat_model_inference_server()
+openai_basic_model = loader.init_model_openai_basic()
 
 prompt_sample_agent = get_prompt_sample_agent()
 
 sample_agent = create_react_agent(
-    inference_server_model,
+    openai_basic_model,
     tools=[],
     prompt=prompt_sample_agent,
 )
