@@ -1,3 +1,4 @@
+import json
 from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.types import Send
 
@@ -212,6 +213,10 @@ def assign_pii_workers(state: State):
                     "all_segment_ids": payment_data["all_segment_ids"]
                 }
                 
+                # Debug: Log data being sent to Payment Agent
+                logger.info(f"DEBUG: Sending to Payment Agent - card_number_sections: {len(pii_info_data['card_number_sections'])}")
+                logger.info(f"DEBUG: Card number data: {pii_info_data['card_number_sections']}")
+                
                 sends.append(
                     Send("pii_worker", {
                         "agent_name": "Agent_Payment",
@@ -259,12 +264,20 @@ def pii_worker(state: WorkerState):
     if 'text_and_segment' in state:
         overview_text = state['text_and_segment'].get('text', '')
     
+    # Debug: Log PII info content before sending to Payment Agent
+    logger.info(f"DEBUG: PII Info content for {state['agent_name']}: {state['pii_info']}")
+    
     messages = [
         SystemMessage(content=agent_config['system_prompt']),
         HumanMessage(content=f"""
-        Agent: {state['agent_name']}
-        PII Information: {state['pii_info']}
-        Overview Text: {overview_text}
+        Agent: 
+        {state['agent_name']}
+
+        PII Information: 
+        {state['pii_info']}
+
+        Overview Text: 
+        {overview_text}
         """)
     ]
 
@@ -272,7 +285,7 @@ def pii_worker(state: WorkerState):
     
     result = agent_manager.pii_sub_agent_worker.invoke(messages)
     
-    logger.info(result)
+    logger.info(f"DEBUG: Payment Agent result: {result}")
 
     logger.info(f"=== PII Worker Completed: {state['agent_name']} ===")
     return {"completed_results": [{

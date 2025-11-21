@@ -9,7 +9,13 @@ wheels/
 # Virtual environments
 .venv
 
+# Environment variables
 .env
 
 .ruff_cache
-examples
+
+# Examples
+examples/
+
+# Logs
+logs/

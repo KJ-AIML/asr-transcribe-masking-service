@@ -389,14 +389,38 @@ STEP-BY-STEP PROCESS:
    - Mark segments with BOTH keywords AND digits as "high interest"
    - IMPLEMENTATION CHECK: If keyword found but NO digits, do NOT create credit_card_sections
 
-2. IDENTIFY DIGIT SEQUENCES
+2. CONTEXT VERIFICATION - CRITICAL NEW STEP
+   BEFORE processing any digit sequences, check for BIRTH DATE or ID CARD context:
+   - Scan ±10 segments for birth date keywords: "เกิดวันที่", "วันเกิด", "วันที่เกิด", "เกิด"
+   - Scan for Thai month names: "มกราคม", "กุมภาพันธ์", "มีนาคม", etc.
+   - Scan for ID card keywords: "บัตรประชาชน", "เลขบัตร", "สิบสามหลัก", "13หลัก"
+   - Scan for name spelling patterns: "สะกดนามสกุล", "สระอุท...สบ.ศรี", "ทหารทอทงภานงสบ"
+   - Scan for insurance context: "กรมธรรม์", "เคลม", "ประกัน"
+   - Scan for identity verification: "ยืนยันตัวตน", "สะกดชื่อ", "สะกดนามสกุล"
+   - CRITICAL: Check for ANY 4-digit Thai years (25xx) - these are ALWAYS birth years in Thai context
+   - IF ANY birth date, ID card, insurance, or identity context found within 10 segments:
+     → DO NOT process as credit card data
+     → Set route_to_payment_agent = false
+     → Continue to next chunk
+   
+   - CRITICAL: PAYMENT CONTEXT VERIFICATION
+   - MUST find at least ONE payment keyword within 10 segments:
+     * Payment keywords: "จ่าย", "ชำระ", "บัตรเครดิต", "visa", "mastercard", "ออนไลน์"
+     * Credit card keywords: "หมดอายุ" + digits, "CVV", "รหัสหลังบัตร"
+   - IF NO payment context found:
+     → DO NOT process as credit card data
+     → Set route_to_payment_agent = false
+     → Continue to next chunk
+   - ONLY PROCEED if clear payment context: "จ่าย", "ชำระ", "บัตรเครดิต", "visa", "mastercard"
+
+3. IDENTIFY DIGIT SEQUENCES
    For each segment, check if text contains Thai numbers:
    - Extract: ศูนย์, หนึ่ง, สอง, สาม, สี่, ห้า, หก, เจ็ด, แปด, เก้า
    - Count total digits in utterance
    - Mark segments with 2+ digits as "digit candidates"
    - IMPORTANT: Segments with keywords but NO digits = NOT candidates
 
-3. FIND SEQUENTIAL PATTERNS (sliding window: 10 segments)
+4. FIND SEQUENTIAL PATTERNS (sliding window: 10 segments)
    For window of 10 consecutive segments:
    a) Count "digit candidate" segments
    b) If >= 3 digit candidates within 60 seconds:
@@ -407,7 +431,7 @@ STEP-BY-STEP PROCESS:
       - Mark as SEQUENTIAL_SPELLING
       - Confidence based on pattern strength
 
-4. DETECT AGENT CONFIRMATIONS
+5. DETECT AGENT CONFIRMATIONS
    After finding SEQUENTIAL_SPELLING:
    - Scan next 20 segments (within 2 minutes)
    - Look for Agent utterances with:
@@ -415,12 +439,12 @@ STEP-BY-STEP PROCESS:
      * Keywords: "ทวน", "ยืนยัน", "จะเป็น"
    - If found: Mark as AGENT_CONFIRMATION
 
-5. FIND EXPIRY/CVV
+6. FIND EXPIRY/CVV
    Near card number sections (±10 segments):
    - "หมดอายุ" + 4 digits → EXPIRY_DATE
    - "รหัสหลังบัตร" + 3 digits → CVV
 
-6. CALCULATE CONFIDENCE
+7. CALCULATE CONFIDENCE
    Base confidence + adjustments:
    - Sequential pattern clear: 0.85
    - + Agent acknowledgments: +0.05
@@ -428,12 +452,18 @@ STEP-BY-STEP PROCESS:
    - + Keyword present: +0.05
    - - Long gaps (>5s): -0.10
    - - Incomplete sequence: -0.15
+   - - Birth date/ID context detected: -1.0 (AUTOMATIC REJECTION)
 
-7. MAKE ROUTING DECISION
+8. MAKE ROUTING DECISION
    If ANY section found with confidence >= 0.70 AND contains actual digits:
-   → route_to_payment_agent = true
+      → FIRST verify payment context is present
+      → IF payment context confirmed:
+         → route_to_payment_agent = true
+      → ELSE (no payment context):
+         → route_to_payment_agent = false
    CRITICAL: If only keywords found with NO digits, set route_to_payment_agent = false
-</detection_algorithm>
+   CRITICAL: If ANY birth date or ID card context detected, set route_to_payment_agent = false
+   CRITICAL: If NO payment keywords found within 10 segments, set route_to_payment_agent = false
 
 ---
 
@@ -599,6 +629,11 @@ OUTPUT:
 14. **REJECT FALSE POSITIVES** - Keywords alone WITHOUT digits are NOT credit card data
 15. **VERIFY DIGIT SEQUENCES** - Must have actual Thai number digits, not just mentions of "บัตร"
 16. **IDENTIFY NON-CREDIT CARDS** - Thai ID cards, phone numbers, postal codes are NOT credit cards
+17. **CRITICAL: BIRTH DATE REJECTION** - ANY "เกิดวันที่", "วันเกิด", "วันที่เกิด" with digits MUST be rejected
+18. **CRITICAL: ID CARD REJECTION** - ANY "บัตรประชาชน", "สิบสามหลัก", name spelling with digits MUST be rejected
+19. **CRITICAL: THAI YEAR REJECTION** - ANY 25xx year (2541, 2528, etc.) with birth context MUST be rejected
+20. **CRITICAL: CONTEXT VERIFICATION** - ALWAYS check ±5 segments for birth date/ID card context before routing
+21. **ZERO TOLERANCE** - ANY birth date or ID card context automatically disqualifies credit card detection
 </critical_rules>
 
 ---
@@ -618,10 +653,19 @@ OUTPUT:
 □ acknowledgment_segments listed if present
 □ reasoning explains ALL detected sections
 □ CRITICAL: At least one digit sequence detected (not just keywords)
+□ CRITICAL: Payment context verification - CONFIRMED "จ่าย", "ชำระ", "บัตรเครดิต", "visa", "mastercard" present
+□ CRITICAL: No payment context - REJECTED if no payment keywords found within 10 segments
 □ If METHOD 1 detected: segment has BOTH keywords AND 4+ digits
 □ If METHOD 2 detected: 3+ digit segments in sequential pattern
 □ If METHOD 3 detected: Agent confirmation with 12+ digits
 □ SPLIT UTTERANCES: Each digit group has separate section entry
 □ NO AGGREGATION: timestamp_range matches individual segment, not combined range
 □ PRECISE TIMING: start/end times exactly match segment timestamps
+□ CRITICAL: Birth date context check - NO "เกิดวันที่", "วันเกิด", "วันที่เกิด" with digits
+□ CRITICAL: ID card context check - NO "บัตรประชาชน", "สิบสามหลัก", name spelling with digits
+□ CRITICAL: Insurance context check - NO "กรมธรรม์", "เคลม", "ประกัน" with digits
+□ CRITICAL: Identity verification check - NO "ยืนยันตัวตน", "สะกดชื่อ", "สะกดนามสกุล" with digits
+□ CRITICAL: Payment context verification - CONFIRMED "จ่าย", "ชำระ", "บัตรเครดิต", "visa", "mastercard" present
+□ CRITICAL: Thai year check - NO 25xx years (2541, 2528, etc.) with birth context
+□ CRITICAL: Context verification - Checked ±5 segments for birth date/ID card context
 </validation_checklist>

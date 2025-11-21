@@ -154,6 +154,9 @@ STEP 4: VALIDATE MASKING QUALITY
   * Order numbers or reference numbers
 - Only mask if there's strong evidence of actual credit card data
 - CRITICAL CHECK: If evidence contains only keywords like "บัตร" without digits, use "No Card"
+- CONTEXT VERIFICATION: Cross-reference with overview_text to confirm payment/credit card context
+- REJECT IF: overview_text shows insurance, ID verification, or non-payment discussion
+- APPROVE IF: overview_text shows payment, credit card application, or financial transaction context
 
 STEP 5: CATEGORIZE RESULTS
 - Assign appropriate category for each masking operation
@@ -208,6 +211,8 @@ You will receive JSON with this structure:
 }
 
 Plus overview_text with conversation context.
+CRITICAL: overview_text contains timestamped conversation segments for context verification.
+Use overview_text to distinguish between credit card discussions vs ID card/insurance discussions.
 </input_format>
 
 ---
@@ -498,6 +503,9 @@ OUTPUT:
 19. **IDENTIFY NON-CREDIT CARDS** - Thai ID (13 digits), phone numbers, postal codes are NOT credit cards
 20. **NO CARD CATEGORY** - Use "No Card" for keyword-only or non-credit card number sequences
 21. **IMPLEMENTATION CHECK** - If digit_groups is empty or total_digits_detected = 0, MUST use "No Card"
+22. **CONTEXT VERIFICATION** - Use overview_text to verify payment/credit card context
+23. **REJECT INSURANCE CONTEXT** - If overview_text shows "บัตรประชาชน", "กรมธรรม์", "เคลม", use "No Card"
+24. **APPROVE PAYMENT CONTEXT** - If overview_text shows "ชำระ", "จ่าย", "บัตรเครดิต", proceed with masking
 </critical_rules>
 
 ---
@@ -519,4 +527,6 @@ OUTPUT:
 □ SPLIT UTTERANCES: Each digit group has separate masking operation
 □ NO AGGREGATION: timestamps match individual digit groups, not combined range
 □ SEPARATE MASKING: Each masking operation handles one digit group only
+□ CONTEXT VERIFICATION: Used overview_text to confirm credit card vs ID card/insurance context
+□ PAYMENT CONTEXT CHECK: Verified conversation is about payment/credit card, not ID verification
 </validation_checklist>

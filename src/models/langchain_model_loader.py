@@ -1,5 +1,6 @@
 from langchain.chat_models import init_chat_model
 from langchain_openai import ChatOpenAI
+from langchain_ollama import ChatOllama
 from typing import Optional, Dict, Any
 import os
 
@@ -64,6 +65,19 @@ class LangchainModelLoader:
             openai_api_base=settings.INFERENCE_SERVER_URL,
         )
         self.models["inference_server"] = model
+        return model
+
+    def init_chat_model_inference_private_server(self, temperature: float = 0.0, **kwargs) -> Any:
+        config = {"temperature": temperature}
+        config.update({k: v for k, v in kwargs.items() if k != "temperature"})
+        
+        model = ChatOllama(
+            model=settings.INFERENCE_PRIVATE_SERVER_MODEL_BASIC,
+            temperature=temperature,
+            top_p=kwargs.get("top_p", 0.90),
+            openai_api_base=settings.INFERENCE_PRIVATE_SERVER_URL,
+        )
+        self.models["inference_private_server"] = model
         return model
 
     def get_model(self, model_name: str) -> Optional[Any]:
