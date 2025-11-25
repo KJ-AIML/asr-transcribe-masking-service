@@ -6,6 +6,8 @@ from src.agents.schemas.types import (
     State,
     WorkerState,
     SynthesizedPIIResult,
+
+    ReVerifyState
 )
 from src.agents.agent_manager.agent_manager import AgentManager
 from src.agents.prompts.prompt_manager import PromptManager
@@ -403,4 +405,82 @@ def route_check(state: State):
         return "Accepted"
     elif state["self_checker_feedback_status"] == "FAIL":
         logger.info("Self Checker Node Fail")
+        return "Rejected"
+
+def llm_call_re_verify(state: ReVerifyState):
+    """Call LLM to re-verify detections"""
+    logger.info("=== Processing transcript with re-verify node ===")
+    
+    # Extract detection data from state
+    detection_data = state.get('detection_data', {})
+    context_text = detection_data.get('context_text', '')
+    detection = detection_data.get('detection', {})
+    segments = detection_data.get('segments', [])
+    context_window = detection_data.get('context_window', {})
+    
+    # Format the input for the re-verify prompt
+    formatted_input = {
+        "detection": detection,
+        "context_text": context_text,
+        "segments": segments,
+        "context_window": context_window
+    }
+        
+    # logger.info(f"Formatted Input: {formatted_input}")
+
+    messages = [
+        SystemMessage(content=prompt_manager.re_verify),
+        HumanMessage(content=f"""
+        Please re-verify the following detection:
+        
+        ###Detection: {detection}
+
+        ###Context Text: {context_text}
+
+        ###Segments: {segments}
+
+        ###Context Window: {context_window}
+        """)
+    ]
+    
+    response = agent_manager.re_verify.invoke(messages)
+
+    logger.info("=== Re-Verify Node Success ===")
+
+    logger.info(f"Re-Verify Response: {response.model_dump()}")
+
+    improve_messages = [
+        SystemMessage(content=prompt_manager.consistency_checker),
+        HumanMessage(content=response.model_dump_json())
+    ]
+    
+    improve_response = agent_manager.consistency_checker.invoke(improve_messages)
+    
+    logger.info(f"Consistency Checker Response: {improve_response.model_dump()}")
+    
+    return {"re_verify_results": [improve_response.model_dump()]}
+
+def llm_call_missing_detection(state: ReVerifyState):
+    """Call LLM to verify missing detections"""
+    logger.info("=== Processing transcript with missing detection node ===")
+        
+    messages = [
+        SystemMessage(content=prompt_manager.missing_detection),
+        HumanMessage(content=str(state['text_and_segment']))
+    ]
+    
+    response = agent_manager.missing_detection.invoke(messages)
+
+    logger.info("=== Missing Detection Node Success ===")
+    # Return as a list with a single item to match expected format
+    return {"missing_detection_results": [response.model_dump()]}
+
+def route_check_re_verify(state: State):
+    """Route For END Node"""
+
+    if state["re_verify_feedback_status"] == "PASS":
+        logger.info("Re-Verify Node Pass")
+        return "Accepted"
+    elif state["re_verify_feedback_status"] == "FAIL":
+        logger.info("Re-Verify Node Fail")
         return "Rejected"

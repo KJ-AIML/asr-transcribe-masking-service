@@ -3,6 +3,7 @@ from src.config.logs_config import get_logger
 from pydantic import BaseModel
 from src.execution.usecases.process_transcript_usecase import ProcessTranscriptUseCase
 from src.execution.actions.process_transcript_action import ProcessTranscriptAction
+from src.execution.actions.process_transcript_reverify_action import ProcessTranscriptReVerifyAction
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -13,7 +14,8 @@ class TextTranscriptRequest(BaseModel):
 # Dependency injection
 async def get_process_transcript_usecase() -> ProcessTranscriptUseCase:
     action = ProcessTranscriptAction()
-    return ProcessTranscriptUseCase(action)
+    re_verify_action = ProcessTranscriptReVerifyAction()
+    return ProcessTranscriptUseCase(action, re_verify_action)
 
 @router.post("/process_text_transcript", status_code=status.HTTP_200_OK)
 async def process_text_transcript_endpoint(

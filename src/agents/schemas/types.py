@@ -263,3 +263,37 @@ class SynthesizedPIIResult(BaseModel):
     )
     
     overall_status: Literal["complete", "partial", "failed"]
+
+
+class ReVerifyState(State):
+    """State for re-verify workflow"""
+    detection_data: dict
+    re_verify_results: dict
+
+class ReVerifyResult(BaseModel):
+    """Result from Re-Verify agent"""
+    
+    reasoning: str = Field(
+        ..., 
+        description="Step-by-step analysis. If you find ID/Address/Policy, write 'FAIL'. If Card/Expiry, write 'PASS'."
+    )
+
+    status: Literal["PASS", "FAIL"] = Field(
+        ..., 
+        description=(
+            "DECISION OUTPUT:\n"
+            "- IF reasoning identifies 'ID Card', 'National ID', or 'Postal Code' -> YOU MUST OUTPUT 'FAIL'.\n"
+            "- IF reasoning identifies 'Credit/Debit Card' -> YOU MUST OUTPUT 'PASS'.\n"
+            "Do not output PASS just because you successfully identified an ID card."
+        )
+    )
+
+class ConsistencyCheckerResult(BaseModel):
+    """Result from Consistency Checker agent"""
+    reasoning: str = Field(..., description="Step-by-step analysis of consistency")
+    status: Literal["PASS", "FAIL"] = Field(..., description="Consistency Checker status")
+
+class MissingDetectionResult(BaseModel):
+    """Result from Missing Detection agent"""
+    status: Literal["PASS", "FAIL"] = Field(..., description="Missing Detection status")
+    reason: Optional[str] = Field(None, description="Reason for the status")

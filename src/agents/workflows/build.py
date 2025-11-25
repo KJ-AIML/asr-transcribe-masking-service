@@ -1,6 +1,6 @@
 from typing import Any
 from langgraph.graph import StateGraph, START, END
-from src.agents.schemas.types import State
+from src.agents.schemas.types import State, ReVerifyState
 from src.agents.workflows.nodes import (
     llm_call_context_improver,
     llm_call_self_checker,
@@ -8,7 +8,9 @@ from src.agents.workflows.nodes import (
     pii_worker,
     synthesizer,
     route_check,
-    assign_pii_workers
+    assign_pii_workers,
+    llm_call_re_verify,
+    route_check_re_verify,
 )
 from src.config.logs_config import get_logger
 
@@ -71,6 +73,40 @@ def build_workflow() -> Any:
     builder.add_edge("pii_worker", "synthesizer")
     builder.add_edge("synthesizer", END)
 
+    # Compile the workflow
+    workflow = builder.compile()
+    
+    logger.info("Workflow compiled successfully")
+
+    return workflow
+
+def build_re_verify_workflow() -> Any:
+    """
+    Build and compile the re-verify workflow graph.
+    
+    This function creates a StateGraph workflow that processes transcripts through
+    multiple stages including re_verify, missing detections
+    
+    Returns:
+        Compiled workflow graph ready for execution
+        
+    Workflow Flow:
+        1. START -> re_verify
+        2. re_verify -> END
+    """
+    logger.info("Building re-verify workflow...")
+    
+    # Build workflow
+    builder = StateGraph(ReVerifyState)
+
+    # Add the nodes
+    builder.add_node("re_verify", llm_call_re_verify)
+    
+    # Add edges to connect nodes
+    builder.add_edge(START, "re_verify")
+    builder.add_edge("re_verify", END)
+    # builder.add_edge("missing_detections", END)
+    
     # Compile the workflow
     workflow = builder.compile()
     

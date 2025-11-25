@@ -1,14 +1,18 @@
 from typing import Dict, List, Any
 from src.config.logs_config import get_logger
 from src.execution.actions.process_transcript_action import ProcessTranscriptAction
+from src.execution.actions.process_transcript_reverify_action import ProcessTranscriptReVerifyAction
 from src.utils.transcript.chunk_transcript import chunk_transcript
 from src.utils.transcript.prase_transcript import parse_transcription
+from src.utils.re_verify.timestamp_extraction import extract_detections_with_timestamps
+from src.utils.re_verify.context_extraction import prepare_re_verify_input
 
 logger = get_logger(__name__)
 
 class ProcessTranscriptUseCase:
-    def __init__(self, action: ProcessTranscriptAction):
+    def __init__(self, action: ProcessTranscriptAction, re_verify_action: ProcessTranscriptReVerifyAction = None):
         self.action = action
+        self.re_verify_action = re_verify_action
     
     async def execute(self, transcript_data: Dict[str, Any]) -> Dict[str, Any]:
         """Process transcript for credit card detection"""
@@ -59,9 +63,11 @@ class ProcessTranscriptUseCase:
             # เช็คผลลัพธ์
             has_credit_card = self._has_credit_card_data(workflow_result)
             
+            # Always store workflow_result for Payment Agent detection extraction
+            subagent_response = workflow_result.get("subagent_response", {})
+            
             if has_credit_card:
                 # Extract masked credit cards from the new structure
-                subagent_response = workflow_result.get("subagent_response", {})
                 masking_results = subagent_response.get("masking_results", [])
                 
                 processed_chunks.append({
@@ -73,7 +79,8 @@ class ProcessTranscriptUseCase:
                     "timestamp_range": {
                         "start": chunk["metadata"]["chunk_start"],
                         "end": chunk["metadata"]["chunk_end"]
-                    }
+                    },
+                    "workflow_result": workflow_result  # Store for Payment Agent detection extraction
                 })
             else:
                 processed_chunks.append({
@@ -83,7 +90,8 @@ class ProcessTranscriptUseCase:
                     "timestamp_range": {
                         "start": chunk["metadata"]["chunk_start"],
                         "end": chunk["metadata"]["chunk_end"]
-                    }
+                    },
+                    "workflow_result": workflow_result  # Store for Payment Agent detection extraction
                 })
         
         # สรุมผล
@@ -99,7 +107,53 @@ class ProcessTranscriptUseCase:
             }
         }
         
+        # Re-Verify process (if re_verify_action is provided)
+        re_verify_results = []
+        if self.re_verify_action and result["chunks_with_credit_card"] > 0:
+            logger.info("Starting Re-Verify process for individual detections")
+            
+            # Extract individual detections with timestamps
+            detections = extract_detections_with_timestamps(processed_chunks, before_seconds=30.0, after_seconds=10.0)
+            logger.info(f"Found {len(detections)} individual detections for Re-Verify")
+            
+            # Process each detection individually
+            for i, detection in enumerate(detections):
+                logger.info(f"Processing detection {i+1}/{len(detections)}: {detection['detection']['type']}")
+                
+                # Prepare input for re-verify
+                re_verify_input = prepare_re_verify_input(detection, transcript_data)
+                
+                # Execute re-verify workflow
+                try:
+                    re_verify_result = await self.re_verify_action.execute(re_verify_input)
+                    re_verify_results.append({
+                        "detection_id": detection["detection"].get("id", f"det_{i}"),
+                        "detection_type": detection["detection"]["type"],
+                        "original_text": detection["detection"]["original_text"],
+                        "re_verify_result": re_verify_result,
+                        "context_window": detection["context_window"]
+                    })
+                    logger.info(f"Re-Verify completed for detection {i+1}")
+                except Exception as e:
+                    logger.error(f"Re-Verify failed for detection {i+1}: {str(e)}")
+                    re_verify_results.append({
+                        "detection_id": detection["detection"].get("id", f"det_{i}"),
+                        "detection_type": detection["detection"]["type"],
+                        "original_text": detection["detection"]["original_text"],
+                        "re_verify_result": {"error": str(e)},
+                        "context_window": detection["context_window"]
+                    })
+        
+        # Add re-verify results to the main result
+        result["re_verify_results"] = re_verify_results
+        result["re_verify_summary"] = {
+            "total_detections": len(detections) if 'detections' in locals() else 0,
+            "processed_detections": len(re_verify_results),
+            "successful_re_verifies": sum(1 for r in re_verify_results if "error" not in r.get("re_verify_result", {}))
+        }
+        
         logger.info(f"Processing complete: {result['chunks_with_credit_card']}/{result['total_chunks']} chunks contain credit cards")
+        logger.info(f"Re-Verify complete: {result['re_verify_summary']['successful_re_verifies']}/{result['re_verify_summary']['processed_detections']} detections processed")
         return result
     
     def _has_credit_card_data(self, workflow_result: Dict[str, Any]) -> bool:
@@ -109,13 +163,24 @@ class ProcessTranscriptUseCase:
         
         # Check if we have masking results from the new structure
         masking_results = subagent_response.get("masking_results", [])
-        if not masking_results:
-            return False
-            
-        # Check if at least one card was successfully masked
-        for result in masking_results:
-            category = result.get("category", "")
-            if category != "No Card" and category in ["Success Mask", "Success Partial"]:
-                return True
+        if masking_results:
+            # Check if at least one card was successfully masked
+            for result in masking_results:
+                category = result.get("category", "")
+                if category != "No Card" and category in ["Success Mask", "Success Partial"]:
+                    return True
+        
+        # NEW: Check for Payment Agent detections directly
+        # Get completed_results to check for Payment Agent detections
+        completed_results = workflow_result.get("completed_results", [])
+        for result in completed_results:
+            if result.get("agent") == "Agent_Payment":
+                payment_result = result.get("result", {})
+                # Check if Payment Agent detected any PAYMENT type data
+                if "detections" in payment_result and payment_result["detections"]:
+                    for detection in payment_result["detections"]:
+                        if detection.get("pii_type") == "PAYMENT":
+                            logger.info(f"Found Payment Agent detection: {detection.get('value', 'N/A')}")
+                            return True
                 
         return False

@@ -4,7 +4,10 @@ from src.agents.schemas.types import (
     SelfCheckerResult, 
     ChunkAnalysis, 
     PIIWorkerOutput,
-    AgentPaymentOutput
+    AgentPaymentOutput,
+    ReVerifyResult,
+    ConsistencyCheckerResult,
+    MissingDetectionResult
 )
 from src.models.langchain_model_loader import LangchainModelLoader
 from src.config.logs_config import get_logger
@@ -24,6 +27,9 @@ class AgentManager:
             "sensitive_data_detector": ChunkAnalysis,
             "pii_sub_agent_worker": PIIWorkerOutput,
             "agent_payment": AgentPaymentOutput,
+            "re_verify_agent": ReVerifyResult,
+            "missing_detection_agent": MissingDetectionResult,
+            "consistency_checker": ConsistencyCheckerResult
         }
 
     @property
@@ -84,6 +90,21 @@ class AgentManager:
     def agent_payment(self):
         """Get the Agent Payment worker"""
         return self.get_agent("agent_payment")
+
+    @property
+    def re_verify(self):
+        """Get the Re-Verify agent"""
+        return self.get_agent("re_verify_agent")
+
+    @property
+    def consistency_checker(self):
+        """Get the Consistency Checker agent"""
+        return self.get_agent("consistency_checker")
+
+    @property
+    def missing_detection(self):
+        """Get the Missing Detection agent"""
+        return self.get_agent("missing_detection_agent")
 
     def list_available_agents(self) -> list:
         """List all available agent names"""

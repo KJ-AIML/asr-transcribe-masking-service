@@ -16,7 +16,6 @@ class PromptManager:
         self._self_checker: Optional[str] = None
         self._pii_router: Optional[str] = None
         self._re_verify: Optional[str] = None
-        self._consistency_checker: Optional[str] = None
         
         # Subagent configurations
         self._subagent_configs = [
@@ -74,14 +73,6 @@ class PromptManager:
             self._re_verify = self._load_prompt("agents/agent_re_verify.md")
             logger.debug("Re-Verify prompt loaded")
         return self._re_verify
-
-    @property
-    def consistency_checker(self) -> str:
-        """Lazy load Consistency Checker prompt"""
-        if self._consistency_checker is None:
-            self._consistency_checker = self._load_prompt("agents/agent_consistency_checker.md")
-            logger.debug("Consistency Checker prompt loaded")
-        return self._consistency_checker
 
     @property
     def missing_detection(self) -> str:
