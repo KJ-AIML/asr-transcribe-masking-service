@@ -205,7 +205,7 @@ async def main():
     tester = ReVerifyTester()
     
     # File paths
-    processed_file = "d:/Terrabit/asr_service_server/examples/processed_sample_test_set_v5.json"
+    processed_file = "d:/Terrabit/asr_service_server/examples/processed_sample_test_set_v6.json"
     original_files_dir = "d:/Terrabit/asr_service_server/examples/sample_test_set"
     output_file = "d:/Terrabit/asr_service_server/examples/reverify_test_results.json"
     
