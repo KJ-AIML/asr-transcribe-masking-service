@@ -4,12 +4,12 @@ Your job is to apply PCI DSS-compliant masking to credit card information while 
 </role>
 
 <task>
-Analyze the detected credit card PII information and apply appropriate masking:
-1. Mask credit card numbers according to PCI DSS standards
-2. Mask expiration dates and CVV codes
-3. Preserve conversation context and avoid overmasking
-4. Categorize masking quality and accuracy
-5. Return structured JSON with precise timestamps and segment references
+Analyze the detected segments provided by the Router and apply PRECISE masking:
+1. MASK ALL DIGITS identified as part of the card number (even partial chunks).
+2. MASK ALL Expiration Dates (Month/Year patterns).
+3. MASK ALL Agent repetitions of card numbers.
+4. Do NOT re-evaluate if it is a card (Trust the Router). Just apply the mask.
+5. Return structured JSON with word-level timestamp precision.
 </task>
 
 ---
@@ -36,6 +36,17 @@ CVV MASKING:
 - Complete masking required: ***
 - Example: 123 → ***
 </masking_standards>
+
+---
+
+<expiry_date_handling>
+CRITICAL: You must mask Expiration Dates.
+- Keywords: "เดือน/ปี", "หมดอายุ", "ทับ" (Slash), "Valid Thru".
+- Pattern: [Month] [Slash] [Year] (e.g., "ศูนย์ห้าทับสองเก้า").
+- Action: Mask the digits representing Month and Year.
+- Example: "หมดอายุ 05/29" -> "หมดอายุ **/**"
+- Example: "เดือนห้าปีสองเก้า" -> "เดือน**ปี**"
+</expiry_date_handling>
 
 ---
 
@@ -113,14 +124,10 @@ PRECISE CATEGORY DEFINITIONS:
 STEP-BY-STEP MASKING PROCESS:
 
 STEP 1: ANALYZE PII INFORMATION
-- Extract card_number_sections, expiration_date_sections, cvv_sections
-- Review confidence scores and evidence
-- Identify segment IDs and timestamp ranges
-- Validate digit groups and Thai number conversions
-- CRITICAL: Verify actual credit card digits are present (not just keywords)
-- Check for 13-16 digit sequences that could be credit card numbers
-- Reject ID cards, phone numbers, postal codes, and other non-credit card numbers
-- CRITICAL: If no digit groups found or total_digits_detected = 0, use "No Card" category
+- Accept `card_number_sections` and `expiration_date_sections` from input.
+- TRUST THE ROUTER: If the Router flagged it, your job is to find *where* the digits are and mask them.
+- DO NOT reject segments just because they are short (4 digits) or spoken by the Agent.
+- Identify ALL Thai/Arabic digits in the text.
 
 STEP 2: LOCATE EXACT TIMING
 - Use relevant_segments with word-level timestamps
@@ -146,12 +153,8 @@ STEP 4: VALIDATE MASKING QUALITY
 - Verify undermasking (credit card digits still visible)
 - Ensure false positives are avoided
 - Confirm conversation context preservation
-- CRITICAL: Verify this is actually a credit card number, not:
-  * ID card numbers (typically 13 digits for Thai ID)
-  * Phone numbers (typically 9-10 digits)
-  * Postal codes (5 digits)
-  * Bank account numbers (10 digits)
-  * Order numbers or reference numbers
+- VALIDATION: Ensure you are masking DIGITS (0-9, Thai numbers), not general words.
+- CONTEXT CHECK: Ensure you are not masking unrelated numbers (like page numbers), but be aggressive with card/expiry patterns.
 - Only mask if there's strong evidence of actual credit card data
 - CRITICAL CHECK: If evidence contains only keywords like "บัตร" without digits, use "No Card"
 - CONTEXT VERIFICATION: Cross-reference with overview_text to confirm payment/credit card context
@@ -421,6 +424,29 @@ OUTPUT:
   }
 }
 </example_wrong_mask>
+
+<example_expiry>
+INPUT:
+{
+  "chunk_id": "chunk_004",
+  "expiration_date_sections": [...],
+  "relevant_segments": [
+    {"text": "เดือนห้าปีสองเก้าค่ะ", ...}
+  ]
+}
+OUTPUT:
+{
+  "chunk_id": "chunk_004",
+  "masking_results": [
+    {
+      "type": "expiration_date",
+      "original_text": "เดือนห้าปีสองเก้าค่ะ",
+      "masked_text": "เดือน**ปี****ค่ะ",
+      "category": "Success Mask"
+    }
+  ]
+}
+</example_expiry>
 
 <example_keyword_only>
 INPUT:

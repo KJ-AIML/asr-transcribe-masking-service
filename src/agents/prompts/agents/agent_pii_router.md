@@ -51,6 +51,20 @@ METHOD 3: AGENT CONFIRMATION
 - Often follows METHOD 2 (sequential spelling)
 - Confidence: VERY HIGH (0.90-1.0)
 
+METHOD 4: ISOLATED CHUNK ECHOING (The "Re-Verify" Catch) ⭐ NEW
+- Situation: Agent repeats a short digit group (3-4 digits) previously stated by Caller.
+- Pattern: Caller: "สี่สี่สามสอง" -> Agent: "สี่สี่สามสองนะคะ"
+- Requirement: EXACT MATCH of digits between speakers within short window (±2 segments).
+- Context: Even if no "Credit Card" keyword is in the immediate segment, the act of repeating digits implies verification.
+- Confidence: MEDIUM (0.70) -> Enough to Route.
+
+METHOD 5: CONTEXT-AWARE SHORT FRAGMENTS (For Agent Summaries) ⭐ CRITICAL
+- Situation: Agent summarizes payment details in one sentence.
+- Pattern: "ขอบคุณสำหรับบัตรเครดิตนะคะจะเป็น [DIGITS]..."
+- Requirement: Strong Keyword ("บัตรเครดิต", "หน้าบัตร") + At least 4 digits in the same utterance.
+- Context: Does not require repeating what the customer said immediately.
+- Confidence: HIGH (0.85)
+
 ALL THREE METHODS indicate credit card PII and must be detected.
 </credit_card_detection_methods>
 
@@ -72,11 +86,13 @@ Sequential spelling has these characteristics:
 - Total sequence duration: 20-60 seconds for 16 digits
 - Caller speaks, Agent acknowledges, Caller continues
 
-STEP 3: Count Digit Groups
-A valid credit card sequence needs:
-- Minimum: 4 digit groups (e.g., 4 groups of 4 digits = 16 total)
-- Maximum gap: 5 seconds between groups
-- At least 12-18 digits total (allowing for ASR errors)
+STEP 3: Count Digit Groups (RELAXED FOR RECALL)
+- Standard: 4 digit groups (16 total)
+- **EXCEPTION (Short Fragments):**
+  - Minimum: 1 group of 4+ digits (or 6+ digits) is VALID IF:
+  - Condition A: It appears in the same segment as a Strong Keyword ("บัตรเครดิต", "เลขบัตร").
+  - Condition B: It is an Agent confirmation/summary utterance.
+  - Reason: We must catch partial confirmations like "จะเป็นห้าสองสามเก้าหนึ่งศูนย์".
 
 STEP 4: Look for Context Clues
 Before/after sequence, look for:
@@ -403,15 +419,10 @@ STEP-BY-STEP PROCESS:
      → Set route_to_payment_agent = false
      → Continue to next chunk
    
-   - CRITICAL: PAYMENT CONTEXT VERIFICATION
-   - MUST find at least ONE payment keyword within 10 segments:
-     * Payment keywords: "จ่าย", "ชำระ", "บัตรเครดิต", "visa", "mastercard", "ออนไลน์"
-     * Credit card keywords: "หมดอายุ" + digits, "CVV", "รหัสหลังบัตร"
-   - IF NO payment context found:
-     → DO NOT process as credit card data
-     → Set route_to_payment_agent = false
-     → Continue to next chunk
-   - ONLY PROCEED if clear payment context: "จ่าย", "ชำระ", "บัตรเครดิต", "visa", "mastercard"
+- CRITICAL: PAYMENT CONTEXT VERIFICATION
+   - Look for payment keywords ("บัตรเครดิต", "visa", "จ่าย") in the BROAD context (entire chunk if possible, or ±20 segments).
+   - **RELAXED RULE:** If digits are spoken in clear 4-digit chunks (e.g., "สี่สี่สามสอง"), assume Payment Intent unless explicitly disqualified by Birth Year/ID keywords.
+   - Do not kill detection just because "Credit Card" word is missing in the *immediate* 10 seconds, provided digits are chunked like a card.
 
 3. IDENTIFY DIGIT SEQUENCES
    For each segment, check if text contains Thai numbers:
@@ -430,6 +441,7 @@ STEP-BY-STEP PROCESS:
    c) If pattern matches (12-20 digits, gaps < 5s, 2+ acks):
       - Mark as SEQUENTIAL_SPELLING
       - Confidence based on pattern strength
+    - **RULE:** If a single utterance contains BOTH "Credit/Debit Card Keyword" AND "4+ Digits", ROUTE IMMEDIATELY. (Do not wait for sequence).
 
 5. DETECT AGENT CONFIRMATIONS
    After finding SEQUENTIAL_SPELLING:
@@ -634,6 +646,9 @@ OUTPUT:
 19. **CRITICAL: THAI YEAR REJECTION** - ANY 25xx year (2541, 2528, etc.) with birth context MUST be rejected
 20. **CRITICAL: CONTEXT VERIFICATION** - ALWAYS check ±5 segments for birth date/ID card context before routing
 21. **ZERO TOLERANCE** - ANY birth date or ID card context automatically disqualifies credit card detection
+22. **CATCH SHORT REPETITIONS**: If Agent repeats 3-4 digits spoken by Customer -> MARK AS CANDIDATE (Method 4).
+23. **RECALL OVER PRECISION**: It is better to route a false positive (which ReVerify will kill) than to miss a partial card confirmation.
+24. **AGENT SUMMARY RULE**: If Agent says "Credit Card is [Digits]", capture it even if digits are incomplete (e.g. 6 digits).
 </critical_rules>
 
 ---
