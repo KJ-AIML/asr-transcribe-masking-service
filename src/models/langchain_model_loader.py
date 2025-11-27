@@ -63,6 +63,8 @@ class LangchainModelLoader:
             top_p=kwargs.get("top_p", 0.90),
             openai_api_key=config["api_key"],
             openai_api_base=settings.INFERENCE_SERVER_URL,
+            request_timeout=300,
+            max_retries=5,
         )
         self.models["inference_server"] = model
         return model
