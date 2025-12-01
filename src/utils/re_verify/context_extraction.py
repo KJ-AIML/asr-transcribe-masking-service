@@ -155,7 +155,7 @@ def prepare_batch_re_verify_input(
     chunk_data: Dict[str, Any],
     chunk_detections: List[Dict[str, Any]],
     transcript_data: Dict[str, Any],
-    before_seconds: float = 30.0,
+    before_seconds: float = 45.0,
     after_seconds: float = 10.0
 ) -> Dict[str, Any]:
     """

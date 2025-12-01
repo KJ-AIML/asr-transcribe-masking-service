@@ -309,7 +309,7 @@ class ReVerifyBatchIndividualResult(BaseModel):
             "Do not output PASS just because you successfully identified an ID card."
         )
     )
-    likely_category: Literal["credit_debit_card", "id_card", "phone_number", "postal_code", "expiration_date"] = Field(
+    likely_category: Literal["credit_debit_card", "id_card", "phone_number", "postal_code", "expiration_date", "other"] = Field(
         ..., 
         description="Likely category of the detected PII"
     )
@@ -347,7 +347,7 @@ class ConsistencyCheckerBatchIndividualResult(BaseModel):
             "Do not output PASS just because you successfully identified an ID card."
         )
     )
-    likely_category: Literal["credit_debit_card", "id_card", "phone_number", "postal_code", "expiration_date"] = Field(
+    likely_category: Literal["credit_debit_card", "id_card", "phone_number", "postal_code", "expiration_date", "other"] = Field(
         ..., 
         description="Likely category of the detected PII"
     )

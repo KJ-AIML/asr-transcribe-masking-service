@@ -61,7 +61,7 @@ class ProcessTranscriptUseCase:
             async with semaphore:
                 chunk_id = chunk["metadata"]["chunk_index"]
                 retries = 3
-                base_delay = 15.0
+                base_delay = 3.0
                 
                 for attempt in range(retries + 1):
                     try:
@@ -129,6 +129,99 @@ class ProcessTranscriptUseCase:
             processed_chunks = await asyncio.gather(*tasks)
             # Sort by chunk_id to maintain order
             processed_chunks.sort(key=lambda x: x["chunk_id"])
+            
+            # Check for failed chunks and retry them
+            failed_chunks = [c for c in processed_chunks if c.get("status") == "failed"]
+            if failed_chunks:
+                logger.warning(f"Found {len(failed_chunks)} failed chunks, retrying...")
+                
+                # Retry failed chunks with a higher retry count
+                async def retry_failed_chunk(chunk_result):
+                    chunk_id = chunk_result["chunk_id"]
+                    # Find the original chunk data
+                    original_chunk = next(c for c in chunked_result["chunks"] 
+                                        if c["metadata"]["chunk_index"] == chunk_id)
+                    
+                    retries = 5
+                    base_delay = 5.0
+                    
+                    for attempt in range(retries):
+                        try:
+                            logger.info(f"Retrying failed chunk {chunk_id} (Attempt {attempt + 1}/{retries})")
+                            
+                            # ส่งเข้า workflow
+                            workflow_result = await self.action.execute(original_chunk)
+                            
+                            # เช็คผลลัพธ์
+                            has_credit_card = self._has_credit_card_data(workflow_result)
+                            
+                            # Always store workflow_result for Payment Agent detection extraction
+                            subagent_response = workflow_result.get("subagent_response", {})
+                            
+                            if has_credit_card:
+                                # Extract masked credit cards from the new structure
+                                masking_results = subagent_response.get("masking_results", [])
+                                
+                                return {
+                                    "chunk_id": chunk_id,
+                                    "has_credit_card": True,
+                                    "status": "credit_card_found",
+                                    "masked_credit_cards": masking_results,
+                                    "summary": subagent_response.get("summary", {}),
+                                    "timestamp_range": {
+                                        "start": original_chunk["metadata"]["chunk_start"],
+                                        "end": original_chunk["metadata"]["chunk_end"]
+                                    },
+                                    "workflow_result": workflow_result
+                                }
+                            else:
+                                return {
+                                    "chunk_id": chunk_id,
+                                    "has_credit_card": False,
+                                    "status": "no_credit_card_found",
+                                    "timestamp_range": {
+                                        "start": original_chunk["metadata"]["chunk_start"],
+                                        "end": original_chunk["metadata"]["chunk_end"]
+                                    },
+                                    "workflow_result": workflow_result
+                                }
+                                
+                        except Exception as e:
+                            if attempt < retries - 1:
+                                delay = base_delay * (2 ** attempt)
+                                logger.warning(f"Retry chunk {chunk_id} failed (Attempt {attempt + 1}/{retries}): {str(e)}. Retrying in {delay}s...")
+                                await asyncio.sleep(delay)
+                            else:
+                                logger.error(f"Retry chunk {chunk_id} failed after {retries} attempts: {str(e)}")
+                                # Return the original failed result
+                                return chunk_result
+                
+                # Process retries with semaphore to control concurrency
+                retry_semaphore = asyncio.Semaphore(3)
+                retry_tasks = []
+                
+                async def process_with_semaphore(chunk_result):
+                    async with retry_semaphore:
+                        return await retry_failed_chunk(chunk_result)
+                
+                retry_tasks = [process_with_semaphore(c) for c in failed_chunks]
+                if retry_tasks:
+                    retry_results = await asyncio.gather(*retry_tasks)
+                    
+                    # Replace failed chunks with retry results
+                    for retry_result in retry_results:
+                        for i, chunk in enumerate(processed_chunks):
+                            if chunk["chunk_id"] == retry_result["chunk_id"]:
+                                processed_chunks[i] = retry_result
+                                break
+                    
+                    # Sort again to maintain order
+                    processed_chunks.sort(key=lambda x: x["chunk_id"])
+                    
+                    # Log retry summary
+                    successful_retries = sum(1 for c in failed_chunks 
+                                           if c.get("status") != "failed")
+                    logger.info(f"Successfully retried {successful_retries}/{len(failed_chunks)} chunks")
         
         # สรุมผล
         result = {
@@ -158,7 +251,7 @@ class ProcessTranscriptUseCase:
             async def process_batch_reverify(i, chunk_data):
                 async with re_verify_semaphore:
                     retries = 3
-                    base_delay = 2.0
+                    base_delay = 3.0
                     chunk_id = chunk_data["chunk_id"]
                     
                     for attempt in range(retries + 1):
