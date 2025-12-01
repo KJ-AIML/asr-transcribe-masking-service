@@ -108,8 +108,8 @@ async def assign_pii_workers(state: State):
         route_to_payment_agent = routing_plan['route_to_payment_agent']
         credit_card_sections = chunk_result['credit_card_sections']
 
-        logger.info(f"Route to payment agent: {route_to_payment_agent}")
-        logger.info(f"Credit card sections: {credit_card_sections}")
+        # logger.info(f"Route to payment agent: {route_to_payment_agent}")
+        # logger.info(f"Credit card sections: {credit_card_sections}")
         
         if not route_to_payment_agent:
             continue
@@ -133,10 +133,10 @@ async def assign_pii_workers(state: State):
             # This handles cases where PII Router detected digits but didn't populate digit_groups
             if total_digits and total_digits > 0:
                 has_valid_credit_card_data = True
-                logger.info(f"Section {section_type} has {total_digits} digits - processing")
+                # logger.info(f"Section {section_type} has {total_digits} digits - processing")
             elif digit_groups and len(digit_groups) > 0:
                 has_valid_credit_card_data = True
-                logger.info(f"Section {section_type} has {len(digit_groups)} digit groups - processing")
+                # logger.info(f"Section {section_type} has {len(digit_groups)} digit groups - processing")
             else:
                 logger.warning(f"Skipping section {section_type} - no digits detected (total_digits: {total_digits}, digit_groups: {digit_groups})")
                 continue
@@ -170,10 +170,10 @@ async def assign_pii_workers(state: State):
                 cvv_data.append(section_data)
             # Note: cardholder_name is not a standard section_type in the schema
         
-        logger.info(f"Card number data: {card_number_data}")
-        logger.info(f"Expiration date data: {expiration_date_data}")
-        logger.info(f"CVV data: {cvv_data}")
-        logger.info(f"Has valid credit card data: {has_valid_credit_card_data}")
+        # logger.info(f"Card number data: {card_number_data}")
+        # logger.info(f"Expiration date data: {expiration_date_data}")
+        # logger.info(f"CVV data: {cvv_data}")
+        # logger.info(f"Has valid credit card data: {has_valid_credit_card_data}")
         
         # CRITICAL: Only send to Payment Agent if we have valid credit card data with digits
         if route_to_payment_agent and has_valid_credit_card_data and (card_number_data or expiration_date_data or cvv_data):
@@ -217,8 +217,8 @@ async def assign_pii_workers(state: State):
                 }
                 
                 # Debug: Log data being sent to Payment Agent
-                logger.info(f"DEBUG: Sending to Payment Agent - card_number_sections: {len(pii_info_data['card_number_sections'])}")
-                logger.info(f"DEBUG: Card number data: {pii_info_data['card_number_sections']}")
+                # logger.info(f"DEBUG: Sending to Payment Agent - card_number_sections: {len(pii_info_data['card_number_sections'])}")
+                # logger.info(f"DEBUG: Card number data: {pii_info_data['card_number_sections']}")
                 
                 sends.append(
                     Send("pii_worker", {
@@ -288,7 +288,7 @@ async def pii_worker(state: WorkerState):
     
     result = await agent_manager.pii_sub_agent_worker.ainvoke(messages)
     
-    logger.info(f"DEBUG: Payment Agent result: {result}")
+    # logger.info(f"DEBUG: Payment Agent result: {result}")
 
     logger.info(f"=== PII Worker Completed: {state['agent_name']} ===")
     return {"completed_results": [{
@@ -423,6 +423,45 @@ async def llm_call_re_verify(state: ReVerifyState):
     improve_response = await agent_manager.consistency_checker.ainvoke(improve_messages)
     
     logger.info(f"Consistency Checker Response: {improve_response.model_dump()}")
+    
+    return {"re_verify_results": [improve_response.model_dump()]}
+
+async def llm_call_re_verify_batch(state: ReVerifyState):         
+    """Call LLM to re-verify detections"""
+    logger.info("=== Processing transcript with re-verify node ===")
+    
+    # Extract detection data from state
+    detection_data = state.get('detection_data', {})
+    context_text = detection_data.get('context_text', '')
+    detections = detection_data.get('detections', [])
+
+    messages = [
+        SystemMessage(content=prompt_manager.re_verify_batch),
+        HumanMessage(content=f"""
+        Please re-verify the following detections By Comparing them with the Context Text for Understanding the Context:
+        
+        ###Detections: {detections}
+
+        ---
+
+        ###Context Text: {context_text}
+        """)
+    ]
+    
+    response = await agent_manager.re_verify_batch.ainvoke(messages)
+
+    logger.info("=== Re-Verify Node Success ===")
+
+    # logger.info(f"Re-Verify Response: {response.model_dump()}")
+
+    improve_messages = [
+        SystemMessage(content=prompt_manager.consistency_checker_batch),
+        HumanMessage(content=response.model_dump_json())
+    ]
+    
+    improve_response = await agent_manager.consistency_checker_batch.ainvoke(improve_messages)
+    
+    # logger.info(f"Consistency Checker Response: {improve_response.model_dump()}")
     
     return {"re_verify_results": [improve_response.model_dump()]}
 

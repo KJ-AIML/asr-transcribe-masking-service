@@ -30,6 +30,15 @@ class LangchainModelLoader:
         config.update({k: v for k, v in kwargs.items() if k != "temperature"})
         return config
 
+    def _get_deepseek_config(self, **kwargs) -> Dict[str, Any]:
+        config = {"temperature": kwargs.get("temperature", 0.0)}
+        if "api_key" in kwargs:
+            config["api_key"] = kwargs["api_key"]
+        elif settings.DEEPSEEK_API_KEY:
+            config["api_key"] = settings.DEEPSEEK_API_KEY
+        config.update({k: v for k, v in kwargs.items() if k != "temperature"})
+        return config
+
     def init_model_openai_basic(self, temperature: float = 0.0, **kwargs) -> Any:
         config = self._get_openai_config(temperature=temperature, **kwargs)
         model = init_chat_model(model=settings.OPENAI_MODEL_BASIC, **config)
@@ -40,6 +49,18 @@ class LangchainModelLoader:
         config = self._get_openai_config(temperature=temperature, **kwargs)
         model = init_chat_model(model=settings.OPENAI_MODEL_REASONING, **config)
         self.models["openai_reasoning"] = model
+        return model
+
+    def init_model_deepseek_basic(self, temperature: float = 0.0, **kwargs) -> Any:
+        config = self._get_deepseek_config(temperature=temperature, **kwargs)
+        model = init_chat_model(model=settings.DEEPSEEK_MODEL_BASIC, **config)
+        self.models["deepseek_basic"] = model
+        return model
+
+    def init_model_deepseek_reasoning(self, temperature: float = 0.0, **kwargs) -> Any:
+        config = self._get_deepseek_config(temperature=temperature, **kwargs)
+        model = init_chat_model(model=settings.DEEPSEEK_MODEL_REASONING, **config)
+        self.models["deepseek_reasoning"] = model
         return model
 
     def init_chat_model_inference_server(self, temperature: float = 0.0, **kwargs) -> Any:

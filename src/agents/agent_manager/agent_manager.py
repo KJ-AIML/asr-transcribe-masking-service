@@ -7,7 +7,9 @@ from src.agents.schemas.types import (
     AgentPaymentOutput,
     ReVerifyResult,
     ConsistencyCheckerResult,
-    MissingDetectionResult
+    MissingDetectionResult,
+    ReVerifyBatchResult,
+    ConsistencyCheckerResultBatch,
 )
 from src.models.langchain_model_loader import LangchainModelLoader
 from src.config.logs_config import get_logger
@@ -28,8 +30,10 @@ class AgentManager:
             "pii_sub_agent_worker": PIIWorkerOutput,
             "agent_payment": AgentPaymentOutput,
             "re_verify_agent": ReVerifyResult,
+            "re_verify_batch_agent": ReVerifyBatchResult,
+            "consistency_checker": ConsistencyCheckerResult,
+            "consistency_checker_batch": ConsistencyCheckerResultBatch,
             "missing_detection_agent": MissingDetectionResult,
-            "consistency_checker": ConsistencyCheckerResult
         }
 
     @property
@@ -97,9 +101,19 @@ class AgentManager:
         return self.get_agent("re_verify_agent")
 
     @property
+    def re_verify_batch(self):
+        """Get the Re-Verify batch agent"""
+        return self.get_agent("re_verify_batch_agent")
+
+    @property
     def consistency_checker(self):
         """Get the Consistency Checker agent"""
         return self.get_agent("consistency_checker")
+
+    @property
+    def consistency_checker_batch(self):
+        """Get the Consistency Checker batch agent"""
+        return self.get_agent("consistency_checker_batch")
 
     @property
     def missing_detection(self):

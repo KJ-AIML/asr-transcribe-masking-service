@@ -9,8 +9,7 @@ from src.agents.workflows.nodes import (
     synthesizer,
     route_check,
     assign_pii_workers,
-    llm_call_re_verify,
-    route_check_re_verify,
+    llm_call_re_verify_batch,
 )
 from src.config.logs_config import get_logger
 
@@ -100,7 +99,7 @@ def build_re_verify_workflow() -> Any:
     builder = StateGraph(ReVerifyState)
 
     # Add the nodes
-    builder.add_node("re_verify", llm_call_re_verify)
+    builder.add_node("re_verify", llm_call_re_verify_batch)
     
     # Add edges to connect nodes
     builder.add_edge(START, "re_verify")

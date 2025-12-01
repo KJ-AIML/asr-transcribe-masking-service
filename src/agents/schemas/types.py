@@ -1,5 +1,6 @@
 import operator
 from typing import Annotated
+from openai.types.shared_params.reasoning import Reasoning
 from pydantic import BaseModel, Field
 from typing_extensions import TypedDict, Literal, Optional, List
 
@@ -288,10 +289,78 @@ class ReVerifyResult(BaseModel):
         )
     )
 
+class ReVerifyBatchIndividualResult(BaseModel):
+    """Individual result from Re-Verify batch agent"""
+    id: str = Field(..., description="Unique identifier for this re-verify result do not changes from original")
+    detection_id: str = Field(..., description="Detection identifier from the original detection")
+    detection_type: str = Field(..., description="Type of detection (e.g., card_number)")
+    original_text: str = Field(..., description="Original text being analyzed")
+    reasoning: str = Field(
+        ..., 
+        description="Step-by-step analysis. If you find ID/Address/Policy, write 'FAIL'. If Card/Expiry, write 'PASS'."
+    )
+    status: Literal["success", "error"] = Field(..., description="Processing status")
+    recommendation: Literal["PASS", "FAIL"] = Field(
+        ..., 
+        description=(
+            "DECISION OUTPUT:\n"
+            "- IF reasoning identifies 'ID Card', 'National ID', or 'Postal Code' -> YOU MUST OUTPUT 'FAIL'.\n"
+            "- IF reasoning identifies 'Credit/Debit Card' -> YOU MUST OUTPUT 'PASS'.\n"
+            "Do not output PASS just because you successfully identified an ID card."
+        )
+    )
+    likely_category: Literal["credit_debit_card", "id_card", "phone_number", "postal_code", "expiration_date"] = Field(
+        ..., 
+        description="Likely category of the detected PII"
+    )
+    confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence score for the detection")
+
+class ReVerifyBatchResult(BaseModel):
+    """Result from Re-Verify batch agent"""
+    results: List[ReVerifyBatchIndividualResult] = Field(
+        default_factory=list,
+        description="List re-verify results with id, status, and reasoning"
+    )
+
 class ConsistencyCheckerResult(BaseModel):
     """Result from Consistency Checker agent"""
     reasoning: str = Field(..., description="Step-by-step analysis of consistency")
     status: Literal["PASS", "FAIL"] = Field(..., description="Consistency Checker status")
+
+class ConsistencyCheckerBatchIndividualResult(BaseModel):
+    """Result from Consistency Checker batch agent"""
+    id: str = Field(..., description="Unique identifier for this re-verify result do not changes from original")
+    detection_id: str = Field(..., description="Detection identifier from the original detection")
+    detection_type: str = Field(..., description="Type of detection (e.g., card_number)")
+    original_text: str = Field(..., description="Original text being analyzed")
+    reasoning: str = Field(
+        ..., 
+        description="Step-by-step analysis of consistency"
+    )
+    status: Literal["success", "error"] = Field(..., description="Processing status")
+    recommendation: Literal["PASS", "FAIL"] = Field(
+        ..., 
+        description=(
+            "DECISION OUTPUT:\n"
+            "- IF reasoning identifies 'ID Card', 'National ID', or 'Postal Code' -> YOU MUST OUTPUT 'FAIL'.\n"
+            "- IF reasoning identifies 'Credit/Debit Card' -> YOU MUST OUTPUT 'PASS'.\n"
+            "Do not output PASS just because you successfully identified an ID card."
+        )
+    )
+    likely_category: Literal["credit_debit_card", "id_card", "phone_number", "postal_code", "expiration_date"] = Field(
+        ..., 
+        description="Likely category of the detected PII"
+    )
+    confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence score for detection")
+
+
+class ConsistencyCheckerResultBatch(BaseModel):
+    """Result from Consistency Checker batch agent"""
+    results: List[ConsistencyCheckerBatchIndividualResult] = Field(
+        ..., 
+        description="List consistency checker results with id, status, and reasoning"
+    )
+
 
 class MissingDetectionResult(BaseModel):
     """Result from Missing Detection agent"""

@@ -16,7 +16,9 @@ class PromptManager:
         self._self_checker: Optional[str] = None
         self._pii_router: Optional[str] = None
         self._re_verify: Optional[str] = None
+        self._re_verify_batch: Optional[str] = None
         self._consistency_checker: Optional[str] = None
+        self._consistency_checker_batch: Optional[str] = None
         
         # Subagent configurations
         self._subagent_configs = [
@@ -76,12 +78,28 @@ class PromptManager:
         return self._re_verify
 
     @property
+    def re_verify_batch(self) -> str:
+        """Lazy load Re-Verify batch prompt"""
+        if self._re_verify_batch is None:
+            self._re_verify_batch = self._load_prompt("agents/agent_re_verify_batch.md")
+            logger.debug("Re-Verify batch prompt loaded")
+        return self._re_verify_batch
+
+    @property
     def consistency_checker(self) -> str:
         """Lazy load Consistency Checker prompt"""
         if self._consistency_checker is None:
             self._consistency_checker = self._load_prompt("agents/agent_consistency_checker.md")
             logger.debug("Consistency Checker prompt loaded")
         return self._consistency_checker
+
+    @property
+    def consistency_checker_batch(self) -> str:
+        """Lazy load Consistency Checker batch prompt"""
+        if self._consistency_checker_batch is None:
+            self._consistency_checker_batch = self._load_prompt("agents/agent_consistency_checker_batch.md")
+            logger.debug("Consistency Checker batch prompt loaded")
+        return self._consistency_checker_batch
 
     @property
     def missing_detection(self) -> str:
