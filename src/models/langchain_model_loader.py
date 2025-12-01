@@ -29,13 +29,6 @@ class LangchainModelLoader:
             config["api_key"] = settings.OPENAI_API_KEY
         config.update({k: v for k, v in kwargs.items() if k != "temperature"})
         return config
-        config = {"temperature": kwargs.get("temperature", 0.0)}
-        if "api_key" in kwargs:
-            config["api_key"] = kwargs["api_key"]
-        elif settings.GOOGLE_API_KEY:
-            config["api_key"] = settings.GOOGLE_API_KEY
-        config.update({k: v for k, v in kwargs.items() if k != "temperature"})
-        return config
 
     def init_model_openai_basic(self, temperature: float = 0.0, **kwargs) -> Any:
         config = self._get_openai_config(temperature=temperature, **kwargs)
@@ -63,8 +56,8 @@ class LangchainModelLoader:
             top_p=kwargs.get("top_p", 0.90),
             openai_api_key=config["api_key"],
             openai_api_base=settings.INFERENCE_SERVER_URL,
-            request_timeout=300,
-            max_retries=5,
+            request_timeout=450,
+            max_retries=3,
         )
         self.models["inference_server"] = model
         return model

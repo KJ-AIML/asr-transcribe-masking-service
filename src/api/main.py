@@ -66,5 +66,5 @@ if __name__ == "__main__":
         host=settings.SERVER_HOST,
         port=settings.SERVER_PORT,
         log_level=settings.LOG_LEVEL,
-        reload=settings.DEBUG,
+        # reload=settings.DEBUG,
     )

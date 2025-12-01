@@ -1,4 +1,5 @@
 from typing import Dict, List, Any
+import asyncio
 from src.config.logs_config import get_logger
 from src.execution.actions.process_transcript_action import ProcessTranscriptAction
 from src.execution.actions.process_transcript_reverify_action import ProcessTranscriptReVerifyAction
@@ -54,45 +55,80 @@ class ProcessTranscriptUseCase:
         
         # Process each chunk
         processed_chunks = []
-        for chunk in chunked_result["chunks"]:
-            logger.debug(f"Processing chunk {chunk['metadata']['chunk_index']}")
-            
-            # ส่งเข้า workflow
-            workflow_result = await self.action.execute(chunk)
-            
-            # เช็คผลลัพธ์
-            has_credit_card = self._has_credit_card_data(workflow_result)
-            
-            # Always store workflow_result for Payment Agent detection extraction
-            subagent_response = workflow_result.get("subagent_response", {})
-            
-            if has_credit_card:
-                # Extract masked credit cards from the new structure
-                masking_results = subagent_response.get("masking_results", [])
+        semaphore = asyncio.Semaphore(9)
+
+        async def process_single_chunk(chunk):
+            async with semaphore:
+                chunk_id = chunk["metadata"]["chunk_index"]
+                retries = 3
+                base_delay = 15.0
                 
-                processed_chunks.append({
-                    "chunk_id": chunk["metadata"]["chunk_index"],
-                    "has_credit_card": True,
-                    "status": "credit_card_found",
-                    "masked_credit_cards": masking_results,
-                    "summary": subagent_response.get("summary", {}),
-                    "timestamp_range": {
-                        "start": chunk["metadata"]["chunk_start"],
-                        "end": chunk["metadata"]["chunk_end"]
-                    },
-                    "workflow_result": workflow_result  # Store for Payment Agent detection extraction
-                })
-            else:
-                processed_chunks.append({
-                    "chunk_id": chunk["metadata"]["chunk_index"],
-                    "has_credit_card": False,
-                    "status": "no_credit_card_found",
-                    "timestamp_range": {
-                        "start": chunk["metadata"]["chunk_start"],
-                        "end": chunk["metadata"]["chunk_end"]
-                    },
-                    "workflow_result": workflow_result  # Store for Payment Agent detection extraction
-                })
+                for attempt in range(retries + 1):
+                    try:
+                        logger.debug(f"Processing chunk {chunk_id} (Attempt {attempt + 1})")
+                        
+                        # ส่งเข้า workflow
+                        workflow_result = await self.action.execute(chunk)
+                        
+                        # เช็คผลลัพธ์
+                        has_credit_card = self._has_credit_card_data(workflow_result)
+                        
+                        # Always store workflow_result for Payment Agent detection extraction
+                        subagent_response = workflow_result.get("subagent_response", {})
+                        
+                        if has_credit_card:
+                            # Extract masked credit cards from the new structure
+                            masking_results = subagent_response.get("masking_results", [])
+                            
+                            return {
+                                "chunk_id": chunk_id,
+                                "has_credit_card": True,
+                                "status": "credit_card_found",
+                                "masked_credit_cards": masking_results,
+                                "summary": subagent_response.get("summary", {}),
+                                "timestamp_range": {
+                                    "start": chunk["metadata"]["chunk_start"],
+                                    "end": chunk["metadata"]["chunk_end"]
+                                },
+                                "workflow_result": workflow_result  # Store for Payment Agent detection extraction
+                            }
+                        else:
+                            return {
+                                "chunk_id": chunk_id,
+                                "has_credit_card": False,
+                                "status": "no_credit_card_found",
+                                "timestamp_range": {
+                                    "start": chunk["metadata"]["chunk_start"],
+                                    "end": chunk["metadata"]["chunk_end"]
+                                },
+                                "workflow_result": workflow_result  # Store for Payment Agent detection extraction
+                            }
+                            
+                    except Exception as e:
+                        if attempt < retries:
+                            delay = base_delay * (2 ** attempt)
+                            logger.warning(f"Chunk {chunk_id} failed (Attempt {attempt + 1}/{retries + 1}): {str(e)}. Retrying in {delay}s...")
+                            await asyncio.sleep(delay)
+                        else:
+                            logger.error(f"Chunk {chunk_id} failed after {retries + 1} attempts: {str(e)}")
+                            # Return a failed result structure instead of crashing everything
+                            return {
+                                "chunk_id": chunk_id,
+                                "has_credit_card": False,
+                                "status": "failed",
+                                "error": str(e),
+                                "timestamp_range": {
+                                    "start": chunk["metadata"]["chunk_start"],
+                                    "end": chunk["metadata"]["chunk_end"]
+                                },
+                                "workflow_result": {}
+                            }
+
+        tasks = [process_single_chunk(chunk) for chunk in chunked_result["chunks"]]
+        if tasks:
+            processed_chunks = await asyncio.gather(*tasks)
+            # Sort by chunk_id to maintain order
+            processed_chunks.sort(key=lambda x: x["chunk_id"])
         
         # สรุมผล
         result = {
@@ -117,32 +153,48 @@ class ProcessTranscriptUseCase:
             logger.info(f"Found {len(detections)} individual detections for Re-Verify")
             
             # Process each detection individually
-            for i, detection in enumerate(detections):
-                logger.info(f"Processing detection {i+1}/{len(detections)}: {detection['detection']['type']}")
-                
-                # Prepare input for re-verify
-                re_verify_input = prepare_re_verify_input(detection, transcript_data)
-                
-                # Execute re-verify workflow
-                try:
-                    re_verify_result = await self.re_verify_action.execute(re_verify_input)
-                    re_verify_results.append({
-                        "detection_id": detection["detection"].get("id", f"det_{i}"),
-                        "detection_type": detection["detection"]["type"],
-                        "original_text": detection["detection"]["original_text"],
-                        "re_verify_result": re_verify_result,
-                        "context_window": detection["context_window"]
-                    })
-                    logger.info(f"Re-Verify completed for detection {i+1}")
-                except Exception as e:
-                    logger.error(f"Re-Verify failed for detection {i+1}: {str(e)}")
-                    re_verify_results.append({
-                        "detection_id": detection["detection"].get("id", f"det_{i}"),
-                        "detection_type": detection["detection"]["type"],
-                        "original_text": detection["detection"]["original_text"],
-                        "re_verify_result": {"error": str(e)},
-                        "context_window": detection["context_window"]
-                    })
+            re_verify_semaphore = asyncio.Semaphore(9)
+
+            async def process_single_reverify(i, detection):
+                async with re_verify_semaphore:
+                    retries = 3
+                    base_delay = 2.0
+                    
+                    for attempt in range(retries + 1):
+                        try:
+                            logger.info(f"Processing detection {i+1}/{len(detections)}: {detection['detection']['type']} (Attempt {attempt + 1})")
+                            
+                            # Prepare input for re-verify
+                            re_verify_input = prepare_re_verify_input(detection, transcript_data)
+                            
+                            # Execute re-verify workflow
+                            re_verify_result = await self.re_verify_action.execute(re_verify_input)
+                            logger.info(f"Re-Verify completed for detection {i+1}")
+                            return {
+                                "detection_id": detection["detection"].get("id", f"det_{i}"),
+                                "detection_type": detection["detection"]["type"],
+                                "original_text": detection["detection"]["original_text"],
+                                "re_verify_result": re_verify_result,
+                                "context_window": detection["context_window"]
+                            }
+                        except Exception as e:
+                            if attempt < retries:
+                                delay = base_delay * (2 ** attempt)
+                                logger.warning(f"Re-Verify detection {i+1} failed (Attempt {attempt + 1}/{retries + 1}): {str(e)}. Retrying in {delay}s...")
+                                await asyncio.sleep(delay)
+                            else:
+                                logger.error(f"Re-Verify failed for detection {i+1} after {retries + 1} attempts: {str(e)}")
+                                return {
+                                    "detection_id": detection["detection"].get("id", f"det_{i}"),
+                                    "detection_type": detection["detection"]["type"],
+                                    "original_text": detection["detection"]["original_text"],
+                                    "re_verify_result": {"error": str(e)},
+                                    "context_window": detection["context_window"]
+                                }
+
+            re_verify_tasks = [process_single_reverify(i, d) for i, d in enumerate(detections)]
+            if re_verify_tasks:
+                re_verify_results = await asyncio.gather(*re_verify_tasks)
         
         # Add re-verify results to the main result
         result["re_verify_results"] = re_verify_results

@@ -12,6 +12,7 @@ from src.agents.schemas.types import (
 from src.agents.agent_manager.agent_manager import AgentManager
 from src.agents.prompts.prompt_manager import PromptManager
 from src.config.logs_config import get_logger
+from src.utils.transcript.calculate_time_stamp import calculate_word_timing
 
 # Initialize managers
 agent_manager = AgentManager()
@@ -20,7 +21,7 @@ prompt_manager = PromptManager()
 logger = get_logger(__name__)
 
 # Nodes
-def llm_call_context_improver(state: State):
+async def llm_call_context_improver(state: State):
     # Convert transcript to string if it's a dict
 
     logger.info("=== Processing transcript with context improver node ===")
@@ -53,13 +54,13 @@ def llm_call_context_improver(state: State):
             HumanMessage(content=str(state['original_transcript']))
         ]
     
-    response = agent_manager.context_improver.invoke(messages)
+    response = await agent_manager.context_improver.ainvoke(messages)
 
     logger.info("=== Context Improver Node Success ===")
 
     return {"improved_transcript": response.model_dump()}
 
-def llm_call_self_checker(state: State):
+async def llm_call_self_checker(state: State):
 
     logger.info("=== Processing transcript with self checker node ===")
     
@@ -68,7 +69,7 @@ def llm_call_self_checker(state: State):
         HumanMessage(content=str(state['improved_transcript']))
     ]
     
-    response = agent_manager.self_checker.invoke(messages)
+    response = await agent_manager.self_checker.ainvoke(messages)
 
     logger.info("=== Self Checker Node Success ===")
     logger.info(f"=== Self Checker Status: {response.status} ===")
@@ -79,7 +80,7 @@ def llm_call_self_checker(state: State):
         "issue_found": [issue.model_dump() for issue in response.issues_found] if response.issues_found else None
     }
 
-def llm_call_sensitive_data_classify(state: State):
+async def llm_call_sensitive_data_classify(state: State):
 
     logger.info("=== Processing transcript with sensitive data classify node ===")
         
@@ -88,13 +89,13 @@ def llm_call_sensitive_data_classify(state: State):
         HumanMessage(content=str(state['text_and_segment']))
     ]
     
-    response = agent_manager.sensitive_data_detector.invoke(messages)
+    response = await agent_manager.sensitive_data_detector.ainvoke(messages)
 
     logger.info("=== Sensitive Data Classify Node Success ===")
     # Return as a list with a single item to match expected format
     return {"sensitive_data_detected": [response.model_dump()]}
 
-def assign_pii_workers(state: State):
+async def assign_pii_workers(state: State):
     """Assign PII workers based on sensitive data classification"""
     
     logger.info("=== Assigning PII Workers ===")
@@ -245,7 +246,7 @@ def assign_pii_workers(state: State):
     logger.info(f"Total workers assigned: {len(sends)}")
     return sends
 
-def pii_worker(state: WorkerState):
+async def pii_worker(state: WorkerState):
     """Process PII data for a specific agent"""
     
     logger.info(f"=== PII Worker Started: {state['agent_name']} ===")
@@ -267,7 +268,7 @@ def pii_worker(state: WorkerState):
         overview_text = state['text_and_segment'].get('text', '')
     
     # Debug: Log PII info content before sending to Payment Agent
-    logger.info(f"DEBUG: PII Info content for {state['agent_name']}: {state['pii_info']}")
+    # logger.info(f"DEBUG: PII Info content for {state['agent_name']}: {state['pii_info']}")
     
     messages = [
         SystemMessage(content=agent_config['system_prompt']),
@@ -283,9 +284,9 @@ def pii_worker(state: WorkerState):
         """)
     ]
 
-    # logger.info(f"Messages: {messages}")
+    # logger.info(f"Messages Before ainvoke Agent Payment: Agent: {state['agent_name']},\n PII Information: {state['pii_info']},\n Overview Text: {overview_text}")
     
-    result = agent_manager.pii_sub_agent_worker.invoke(messages)
+    result = await agent_manager.pii_sub_agent_worker.ainvoke(messages)
     
     logger.info(f"DEBUG: Payment Agent result: {result}")
 
@@ -296,7 +297,7 @@ def pii_worker(state: WorkerState):
         "result": result.model_dump()
     }]}
 
-def synthesizer(state: State):
+async def synthesizer(state: State):
     """Synthesize results from all workers"""
     logger.info("=== Synthesizer Started ===")
     logger.info(f"Total results to synthesize: {len(state['completed_results'])}")
@@ -370,34 +371,7 @@ def synthesizer(state: State):
         }
     }
 
-def calculate_word_timing(masking_result, segments):
-    """คำนวณเวลาเฉพาะคำที่เป็นตัวเลขจาก segment"""
-    segment_ids = masking_result.get("segment_ids", [])
-    original_text = masking_result.get("original_text", "")
-    
-    # หา segment ที่เกี่ยวข้อง
-    for segment in segments:
-        if segment.get("id") in segment_ids and "words" in segment:
-            words = segment.get("words", [])
-            
-            # หาคำที่ตรงกับข้อความที่ต้องการ mask
-            for i, word in enumerate(words):
-                word_text = word.get("word", "")
-                # ตรวจสอบว่าคำนี้เป็นส่วนหนึ่งของ original_text หรือไม่
-                if original_text and word_text in original_text:
-                    # คืนเวลาเฉพาะคำนั้น
-                    return {
-                        "start_time": word.get("start", masking_result.get("start_time")),
-                        "end_time": word.get("end", masking_result.get("end_time"))
-                    }
-    
-    # ถ้าไม่เจอคำที่ตรงกัน ใช้เวลาของ segment
-    return {
-        "start_time": masking_result.get("start_time"),
-        "end_time": masking_result.get("end_time")
-    }
-
-def route_check(state: State):
+async def route_check(state: State):
     """Route back to need improve or end based upon feedback from the self checker"""
 
     if state["self_checker_feedback_status"] == "PASS":
@@ -407,7 +381,7 @@ def route_check(state: State):
         logger.info("Self Checker Node Fail")
         return "Rejected"
 
-def llm_call_re_verify(state: ReVerifyState):
+async def llm_call_re_verify(state: ReVerifyState):         
     """Call LLM to re-verify detections"""
     logger.info("=== Processing transcript with re-verify node ===")
     
@@ -417,14 +391,6 @@ def llm_call_re_verify(state: ReVerifyState):
     detection = detection_data.get('detection', {})
     segments = detection_data.get('segments', [])
     context_window = detection_data.get('context_window', {})
-    
-    # Format the input for the re-verify prompt
-    formatted_input = {
-        "detection": detection,
-        "context_text": context_text,
-        "segments": segments,
-        "context_window": context_window
-    }
         
     # logger.info(f"Formatted Input: {formatted_input}")
 
@@ -443,7 +409,7 @@ def llm_call_re_verify(state: ReVerifyState):
         """)
     ]
     
-    response = agent_manager.re_verify.invoke(messages)
+    response = await agent_manager.re_verify.ainvoke(messages)
 
     logger.info("=== Re-Verify Node Success ===")
 
@@ -454,13 +420,13 @@ def llm_call_re_verify(state: ReVerifyState):
         HumanMessage(content=response.model_dump_json())
     ]
     
-    improve_response = agent_manager.consistency_checker.invoke(improve_messages)
+    improve_response = await agent_manager.consistency_checker.ainvoke(improve_messages)
     
     logger.info(f"Consistency Checker Response: {improve_response.model_dump()}")
     
     return {"re_verify_results": [improve_response.model_dump()]}
 
-def llm_call_missing_detection(state: ReVerifyState):
+async def llm_call_missing_detection(state: ReVerifyState):
     """Call LLM to verify missing detections"""
     logger.info("=== Processing transcript with missing detection node ===")
         
@@ -469,18 +435,8 @@ def llm_call_missing_detection(state: ReVerifyState):
         HumanMessage(content=str(state['text_and_segment']))
     ]
     
-    response = agent_manager.missing_detection.invoke(messages)
+    response = await agent_manager.missing_detection.ainvoke(messages)
 
     logger.info("=== Missing Detection Node Success ===")
     # Return as a list with a single item to match expected format
     return {"missing_detection_results": [response.model_dump()]}
-
-def route_check_re_verify(state: State):
-    """Route For END Node"""
-
-    if state["re_verify_feedback_status"] == "PASS":
-        logger.info("Re-Verify Node Pass")
-        return "Accepted"
-    elif state["re_verify_feedback_status"] == "FAIL":
-        logger.info("Re-Verify Node Fail")
-        return "Rejected"
