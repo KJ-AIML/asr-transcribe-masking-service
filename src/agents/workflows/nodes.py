@@ -436,17 +436,21 @@ async def llm_call_re_verify_batch(state: ReVerifyState):
     detections = detection_data.get('detections', [])
 
     messages = [
-        SystemMessage(content=prompt_manager.re_verify_batch),
-        HumanMessage(content=f"""
-        Please re-verify the following detections By Comparing them with the Context Text for Understanding the Context:
-        
-        ###Detections: {detections}
+            SystemMessage(content=prompt_manager.re_verify_batch),
+            HumanMessage(content=f"""
+            Please analyze the transcript context below and re-verify the specific detections provided at the end.
 
-        ---
+            ### Context Text (Source of Truth):
+            {context_text}
 
-        ###Context Text: {context_text}
-        """)
-    ]
+            --------------------------------------------------
+
+            ### Detections to Verify (Target List):
+            {detections}
+            
+            Instruction: Process EVERY detection in the list above based on the context provided.
+            """)
+        ]
     
     response = await agent_manager.re_verify_batch.ainvoke(messages)
 
