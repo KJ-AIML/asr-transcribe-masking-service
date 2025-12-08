@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from src.execution.usecases.process_transcript_usecase import ProcessTranscriptUseCase
 from src.execution.actions.process_transcript_action import ProcessTranscriptAction
 from src.execution.actions.process_transcript_reverify_action import ProcessTranscriptReVerifyAction
+from src.execution.actions.process_transcript_masker_action import ProcessTranscriptMaskerAction
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -15,7 +16,8 @@ class TranscriptPayload(BaseModel):
 async def get_process_transcript_usecase() -> ProcessTranscriptUseCase:
     action = ProcessTranscriptAction()
     re_verify_action = ProcessTranscriptReVerifyAction()
-    return ProcessTranscriptUseCase(action, re_verify_action)
+    masker_action = ProcessTranscriptMaskerAction()
+    return ProcessTranscriptUseCase(action, re_verify_action, masker_action)
 
 @router.post("/process_json_transcript", status_code=status.HTTP_200_OK)
 async def process_json_transcript_endpoint(

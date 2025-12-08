@@ -6,8 +6,7 @@ This allows testing Re-verify without running the full processing pipeline
 import json
 import asyncio
 import os
-from typing import Dict, List, Any, Tuple
-from pathlib import Path
+from typing import Dict, List, Any
 
 from src.execution.actions.process_transcript_reverify_action import ProcessTranscriptReVerifyAction
 from src.utils.re_verify.context_extraction import prepare_re_verify_input

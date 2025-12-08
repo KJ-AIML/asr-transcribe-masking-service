@@ -6,12 +6,10 @@ This allows testing Re-verify Batch without running the full processing pipeline
 import json
 import asyncio
 import os
-from typing import Dict, List, Any, Tuple
-from pathlib import Path
+from typing import Dict, List, Any
 
 from src.execution.actions.process_transcript_reverify_action import ProcessTranscriptReVerifyAction
 from src.utils.re_verify.context_extraction import prepare_batch_re_verify_input
-from src.utils.re_verify.timestamp_extraction import extract_detections_by_chunk
 from src.config.logs_config import get_logger
 
 logger = get_logger(__name__)

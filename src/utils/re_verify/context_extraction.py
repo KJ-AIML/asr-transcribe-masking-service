@@ -4,7 +4,7 @@ This module provides functions to extract text context for Re-Verify workflow
 with different context window sizes and analysis capabilities.
 """
 
-from typing import Dict, List, Any, Tuple
+from typing import Dict, List, Any
 from src.config.logs_config import get_logger
 
 def extract_context_with_segments(

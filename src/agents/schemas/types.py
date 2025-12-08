@@ -1,6 +1,5 @@
 import operator
 from typing import Annotated
-from openai.types.shared_params.reasoning import Reasoning
 from pydantic import BaseModel, Field
 from typing_extensions import TypedDict, Literal, Optional, List
 
@@ -309,7 +308,7 @@ class ReVerifyBatchIndividualResult(BaseModel):
             "Do not output PASS just because you successfully identified an ID card."
         )
     )
-    likely_category: Literal["credit_debit_card", "id_card", "phone_number", "postal_code", "expiration_date", "other"] = Field(
+    likely_category: Literal["credit_debit_card", "id_card", "phone_number", "postal_code", "expiration_date", "policy_number", "other"] = Field(
         ..., 
         description="Likely category of the detected PII"
     )
@@ -347,7 +346,7 @@ class ConsistencyCheckerBatchIndividualResult(BaseModel):
             "Do not output PASS just because you successfully identified an ID card."
         )
     )
-    likely_category: Literal["credit_debit_card", "id_card", "phone_number", "postal_code", "expiration_date", "other"] = Field(
+    likely_category: Literal["credit_debit_card", "id_card", "phone_number", "postal_code", "expiration_date", "policy_number", "other"] = Field(
         ..., 
         description="Likely category of the detected PII"
     )
@@ -366,3 +365,26 @@ class MissingDetectionResult(BaseModel):
     """Result from Missing Detection agent"""
     status: Literal["PASS", "FAIL"] = Field(..., description="Missing Detection status")
     reason: Optional[str] = Field(None, description="Reason for the status")
+
+
+class MaskerBatchState(BaseModel):
+    """State for Masker batch agent"""
+    detection_data: dict
+    masker_results: dict
+
+class MaskerBatchIndividualResult(BaseModel):
+    """Individual result from Masker batch agent"""
+    id: str = Field(..., description="Unique identifier for this masker result do not changes from original")
+    detection_id: str = Field(..., description="Detection identifier from the original detection")
+    detection_type: str = Field(..., description="Type of detection (e.g., card_number)")
+    original_text: str = Field(..., description="Original text being analyzed")
+    mask_result: Literal["Masked", "Rejected"] = Field(..., description="Masked result of the original text")
+    reasoning: str = Field(..., description="Step-by-step analysis of the masking decision")
+
+class MaskerBatchResult(BaseModel):
+    """Result from Masker batch agent"""
+    transcript: str = Field(..., description="Transcript with masked data")
+    masker_results: List[MaskerBatchIndividualResult] = Field(
+        default_factory=list,
+        description="List of masker results with id, detection_id, detection_type, original_text, and mask_result"
+    )

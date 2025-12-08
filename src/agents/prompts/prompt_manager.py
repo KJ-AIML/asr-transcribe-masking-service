@@ -19,6 +19,7 @@ class PromptManager:
         self._re_verify_batch: Optional[str] = None
         self._consistency_checker: Optional[str] = None
         self._consistency_checker_batch: Optional[str] = None
+        self._masker_batch: Optional[str] = None
         
         # Subagent configurations
         self._subagent_configs = [
@@ -100,6 +101,14 @@ class PromptManager:
             self._consistency_checker_batch = self._load_prompt("agents/agent_consistency_checker_batch.md")
             logger.debug("Consistency Checker batch prompt loaded")
         return self._consistency_checker_batch
+
+    @property
+    def masker_batch(self) -> str:
+        """Lazy load Masker batch prompt"""
+        if self._masker_batch is None:
+            self._masker_batch = self._load_prompt("agents/agent_masker_batch.md")
+            logger.debug("Masker batch prompt loaded")
+        return self._masker_batch
 
     @property
     def missing_detection(self) -> str:

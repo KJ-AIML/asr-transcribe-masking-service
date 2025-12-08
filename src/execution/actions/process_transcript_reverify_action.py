@@ -1,10 +1,7 @@
-from typing import Dict, Any, List
+from typing import Dict, Any
 from src.config.logs_config import get_logger
 from src.agents.workflows.build import build_re_verify_workflow
 
-from typing import Dict, Any, List
-from src.config.logs_config import get_logger
-from src.agents.workflows.build import build_re_verify_workflow
 
 logger = get_logger(__name__)
 
@@ -36,7 +33,7 @@ class ProcessTranscriptReVerifyAction:
                 }
             })
             
-            logger.debug(f"Re-verify workflow completed for batch")
+            logger.debug("Re-verify workflow completed for batch")
             
             # Extract re-verify results
             re_verify_results = result.get("re_verify_results", [])

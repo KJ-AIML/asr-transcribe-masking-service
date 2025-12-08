@@ -1,19 +1,21 @@
-from typing import Dict, List, Any
+from typing import Dict, Any
 import asyncio
 from src.config.logs_config import get_logger
 from src.execution.actions.process_transcript_action import ProcessTranscriptAction
 from src.execution.actions.process_transcript_reverify_action import ProcessTranscriptReVerifyAction
+from src.execution.actions.process_transcript_masker_action import ProcessTranscriptMaskerAction
 from src.utils.transcript.chunk_transcript import chunk_transcript
 from src.utils.transcript.prase_transcript import parse_transcription
-from src.utils.re_verify.timestamp_extraction import extract_detections_with_timestamps, extract_detections_by_chunk
-from src.utils.re_verify.context_extraction import prepare_re_verify_input, prepare_batch_re_verify_input
+from src.utils.re_verify.timestamp_extraction import extract_detections_by_chunk
+from src.utils.re_verify.context_extraction import prepare_batch_re_verify_input
 
 logger = get_logger(__name__)
 
 class ProcessTranscriptUseCase:
-    def __init__(self, action: ProcessTranscriptAction, re_verify_action: ProcessTranscriptReVerifyAction = None):
+    def __init__(self, action: ProcessTranscriptAction, re_verify_action: ProcessTranscriptReVerifyAction = None, masker_action: ProcessTranscriptMaskerAction = None):
         self.action = action
         self.re_verify_action = re_verify_action
+        self.masker_action = masker_action
     
     async def execute(self, transcript_data: Dict[str, Any]) -> Dict[str, Any]:
         """Process transcript for credit card detection"""
@@ -433,6 +435,28 @@ class ProcessTranscriptUseCase:
         
         logger.info(f"Processing complete: {result['chunks_with_credit_card']}/{result['total_chunks']} chunks contain credit cards")
         logger.info(f"Re-Verify complete: {result['re_verify_summary']['successful_re_verifies']}/{result['re_verify_summary']['processed_detections']} detections processed")
+
+        # Process each chunk as a batch
+        # Masker process
+        if self.masker_action and result["re_verify_summary"]["processed_detections"] > 0:
+            logger.info("Starting Masker process for re-verified detections")
+            
+            # Prepare input for masker action
+            masker_input = {
+                "transcript": transcript_data.get("text", ""),
+                "re_verify_results": result["re_verify_results"]
+            }
+            
+            # Execute masker action
+            masker_result = await self.masker_action.execute(masker_input)
+            
+            # Add masker results to final result
+            result["masker_result"] = masker_result
+            result["masked_transcript"] = masker_result.get("masked_transcript", "")
+            result["masker_summary"] = masker_result.get("masking_summary", {})
+            
+            logger.info(f"Masker process completed: {result['masker_summary'].get('total_detections_masked', 0)} detections masked")
+
         return result
     
     def _has_credit_card_data(self, workflow_result: Dict[str, Any]) -> bool:

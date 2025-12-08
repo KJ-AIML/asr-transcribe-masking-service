@@ -10,6 +10,7 @@ from src.agents.schemas.types import (
     MissingDetectionResult,
     ReVerifyBatchResult,
     ConsistencyCheckerResultBatch,
+    MaskerBatchResult,
 )
 from src.models.langchain_model_loader import LangchainModelLoader
 from src.config.logs_config import get_logger
@@ -33,6 +34,7 @@ class AgentManager:
             "re_verify_batch_agent": ReVerifyBatchResult,
             "consistency_checker": ConsistencyCheckerResult,
             "consistency_checker_batch": ConsistencyCheckerResultBatch,
+            "masker_batch_agent": MaskerBatchResult,
             "missing_detection_agent": MissingDetectionResult,
         }
 
@@ -114,6 +116,11 @@ class AgentManager:
     def consistency_checker_batch(self):
         """Get the Consistency Checker batch agent"""
         return self.get_agent("consistency_checker_batch")
+
+    @property
+    def masker_batch(self):
+        """Get the Masker batch agent"""
+        return self.get_agent("masker_batch_agent")
 
     @property
     def missing_detection(self):

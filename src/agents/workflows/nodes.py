@@ -1,13 +1,12 @@
-import json
 from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.types import Send
 
 from src.agents.schemas.types import (
     State,
     WorkerState,
-    SynthesizedPIIResult,
-
-    ReVerifyState
+    ReVerifyState,
+    MaskerBatchState
+    
 )
 from src.agents.agent_manager.agent_manager import AgentManager
 from src.agents.prompts.prompt_manager import PromptManager
@@ -483,3 +482,42 @@ async def llm_call_missing_detection(state: ReVerifyState):
     logger.info("=== Missing Detection Node Success ===")
     # Return as a list with a single item to match expected format
     return {"missing_detection_results": [response.model_dump()]}
+
+async def llm_call_masker_batch(state: MaskerBatchState):
+    """Call LLM to mask data"""
+    logger.info("=== Processing transcript with masker node ===")
+    
+    # Extract detection data from state
+    if isinstance(state, dict):
+        detection_data = state.get("detection_data", {})
+    else:
+        detection_data = getattr(state, "detection_data", {}) if hasattr(state, "detection_data") else {}
+
+    # Ensure detection_data is a dict
+    if not isinstance(detection_data, dict):
+        detection_data = {}
+
+    transcript = detection_data.get('transcript_text', '')
+    detections = detection_data.get('detections', [])
+
+    messages = [
+        SystemMessage(content=prompt_manager.masker_batch),
+        HumanMessage(content=f"""
+            Please analyze the transcript context below and mask the specific detections provided at the end.
+
+            ### Context Text (Source of Truth):
+            {transcript}
+
+            --------------------------------------------------
+
+            ### Detections to Mask (Target List):
+            {detections}
+            
+            Instruction: Process EVERY detection in the list above based on the context provided.
+            """)
+        ]
+    
+    response = await agent_manager.masker_batch.ainvoke(messages)
+    
+    logger.info("=== Masker Node Success ===")
+    return {"masker_results": [response.model_dump()]}
