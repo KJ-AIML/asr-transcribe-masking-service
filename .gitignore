@@ -19,3 +19,5 @@ examples/
 
 # Logs
 logs/
+
+asr_service_server.tar
