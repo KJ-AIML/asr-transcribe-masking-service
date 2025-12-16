@@ -20,6 +20,7 @@ class PromptManager:
         self._consistency_checker: Optional[str] = None
         self._consistency_checker_batch: Optional[str] = None
         self._masker_batch: Optional[str] = None
+        self._qa_auditor: Optional[str] = None
         
         # Subagent configurations
         self._subagent_configs = [
@@ -110,6 +111,14 @@ class PromptManager:
             logger.debug("Masker batch prompt loaded")
         return self._masker_batch
 
+    @property
+    def qa_auditor(self) -> str:
+        """Lazy load QA Auditor prompt"""
+        if self._qa_auditor is None:
+            self._qa_auditor = self._load_prompt("agents/agent_qa_auditor.md")
+            logger.debug("QA Auditor prompt loaded")
+        return self._qa_auditor
+    
     @property
     def missing_detection(self) -> str:
         """Lazy load Missing Detection prompt"""

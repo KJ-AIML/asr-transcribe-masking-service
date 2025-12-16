@@ -5,8 +5,8 @@ from src.agents.schemas.types import (
     State,
     WorkerState,
     ReVerifyState,
-    MaskerBatchState
-    
+    MaskerBatchState,
+    QAAuditorState
 )
 from src.agents.agent_manager.agent_manager import AgentManager
 from src.agents.prompts.prompt_manager import PromptManager
@@ -521,3 +521,69 @@ async def llm_call_masker_batch(state: MaskerBatchState):
     
     logger.info("=== Masker Node Success ===")
     return {"masker_results": [response.model_dump()]}
+
+async def llm_call_qa_auditor(state: QAAuditorState):
+    """Call LLM to audit masked transcript"""
+    logger.info("=== Processing transcript with QA Auditor node ===")
+    
+    # Extract data from state with proper type checking
+    if isinstance(state, dict):
+        masked_transcript = state.get("masked_transcript", "")
+        original_transcript = state.get("original_transcript", "")
+        detections = state.get("detections", [])
+        chunk_id = state.get("chunk_id", 0)
+        current_chunk_start = state.get("current_chunk_start", 0)
+        context_direction = state.get("context_direction", "both")
+        context_query = state.get("context_query", "")
+    else:
+        masked_transcript = getattr(state, "masked_transcript", "") if hasattr(state, "masked_transcript") else ""
+        original_transcript = getattr(state, "original_transcript", "") if hasattr(state, "original_transcript") else ""
+        detections = getattr(state, "detections", []) if hasattr(state, "detections") else []
+        chunk_id = getattr(state, "chunk_id", 0) if hasattr(state, "chunk_id") else 0
+        current_chunk_start = getattr(state, "current_chunk_start", 0) if hasattr(state, "current_chunk_start") else 0
+        context_direction = getattr(state, "context_direction", "both") if hasattr(state, "context_direction") else "both"
+        context_query = getattr(state, "context_query", "") if hasattr(state, "context_query") else ""
+    
+    # Ensure detections is a list
+    if not isinstance(detections, list):
+        detections = []
+        logger.info(f"Invalid detections format for chunk {chunk_id}: {detections}")
+    
+    # Format detections for LLM
+    detections_text = ""
+    if detections:
+        detections_text = "\n".join([
+            f"- {det.get('detection_type', 'unknown')}: '{det.get('original_text', '')}' at {det.get('start_time', 0):.2f}s-{det.get('end_time', 0):.2f}s"
+            for det in detections
+        ])
+    
+    # logger.info(f"masked_transcript: {masked_transcript} detections: {detections}")
+
+    messages = [
+        SystemMessage(content=prompt_manager.qa_auditor),
+        HumanMessage(content=f"""
+            Please audit the masked transcript for accuracy by comparing it with the original transcript and detections.
+            
+            ### Chunk ID: {chunk_id}
+            
+            ### Original Transcript:
+            {original_transcript}
+            
+            ### Masked Transcript:
+            {masked_transcript}
+            
+            ### Detections in this chunk:
+            {detections_text if detections_text else "No detections in this chunk"}
+            
+            Please check for:
+            1. MissingMask: Sensitive data that should be masked but isn't
+            2. OverMask: Non-sensitive data that was incorrectly masked
+            3. WrongMask: Incorrect masking pattern or format
+        """)
+    ]
+    
+    response = await agent_manager.qa_auditor.ainvoke(messages)
+
+    # logger.info(f"QA Auditor Response: {response.model_dump()}")
+
+    return {"qa_auditor_results": [response.model_dump()]}

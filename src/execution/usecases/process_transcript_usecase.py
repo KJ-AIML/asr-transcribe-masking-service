@@ -306,7 +306,7 @@ class ProcessTranscriptUseCase:
                         else:
                             logger.error(f"Retry workflow chunk {chunk_id} failed after {retries} attempts: {str(e)}")
                             # Return the original failed result
-                            return chunk
+                            return chunk_result
             
             # Process retries with semaphore to control concurrency
             retry_semaphore = asyncio.Semaphore(3)
@@ -452,6 +452,7 @@ class ProcessTranscriptUseCase:
             
             # Add masker results to final result
             result["masker_result"] = masker_result
+            result["original_transcript"] = transcript_data.get("text", "")
             result["masked_transcript"] = masker_result.get("masked_transcript", "")
             result["masker_summary"] = masker_result.get("masking_summary", {})
             

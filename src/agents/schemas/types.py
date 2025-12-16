@@ -1,7 +1,7 @@
 import operator
 from typing import Annotated
 from pydantic import BaseModel, Field
-from typing_extensions import TypedDict, Literal, Optional, List
+from typing_extensions import TypedDict, Literal, Optional, List, Dict, Any
 
 # Stage 
 class State(TypedDict):
@@ -388,3 +388,44 @@ class MaskerBatchResult(BaseModel):
         default_factory=list,
         description="List of masker results with id, detection_id, detection_type, original_text, and mask_result"
     )
+
+class QAAuditorState(TypedDict):
+    masked_transcript: str
+    original_transcript: str
+    detections: list
+    current_chunk_start: float
+    context_direction: str
+    context_query: str
+    qa_auditor_results: dict
+
+class QAAuditorError(BaseModel):
+    """Error details found during QA audit"""
+    error_type: str = Field(..., description="Type of error (MissingMask, OverMask, WrongMask)")
+    detection_id: str = Field(..., description="ID of the detection that has the error")
+    description: str = Field(..., description="Description of the error")
+    location: str = Field(..., description="Location in the transcript where error occurred")
+    severity: str = Field(..., description="Severity level of the error")
+
+class QAAuditorResult(BaseModel):
+    """Result from QA Auditor agent"""
+    reasoning: str = Field(..., description="Step-by-step analysis of the QA audit")
+    status: Literal["PASS", "FAIL"] = Field(..., description="QA Auditor status")
+    errors_found: Optional[List[QAAuditorError]] = Field(default=[], description="List of errors found during audit")
+    quality_score: Optional[float] = Field(default=None, description="Quality score of the masking (0.0-1.0)")
+    recommendations: Optional[List[str]] = Field(default=[], description="Recommendations for improving masking")
+
+class ContextExtensionArgs(BaseModel):
+    base_start_time: float
+    direction: str = "backward"
+    duration: float = 50.0
+    transcript_data: Optional[Dict[str, Any]] = None
+
+class DetectionsInRangeArgs(BaseModel):
+    start_time: float
+    end_time: float
+    detections_data: Optional[List[Dict[str, Any]]] = None
+
+class OriginalTextRangeArgs(BaseModel):
+    start_time: float
+    end_time: float
+    transcript_data: Optional[Dict[str, Any]] = None
