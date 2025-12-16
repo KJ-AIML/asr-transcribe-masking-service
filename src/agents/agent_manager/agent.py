@@ -5,7 +5,7 @@ from src.agents.prompts.sample_agent_prompt import get_prompt_sample_agent
 
 loader = LangchainModelLoader()
 
-inference_private_model = loader.init_chat_model_inference_private_server()
+inference_private_model = loader.init_chat_model_inference_server()
 
 prompt_sample_agent = get_prompt_sample_agent()
 
