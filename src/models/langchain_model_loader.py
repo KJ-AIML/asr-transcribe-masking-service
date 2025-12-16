@@ -21,12 +21,22 @@ class LangchainModelLoader:
             os.environ["INFERENCE_SERVER_MODEL_BASIC"] = settings.INFERENCE_SERVER_MODEL_BASIC
             os.environ["INFERENCE_SERVER_URL"] = settings.INFERENCE_SERVER_URL
 
-    def _get_openai_config(self, **kwargs) -> Dict[str, Any]:
+    def _get_openai_config(self, **kwargs):
         config = {"temperature": kwargs.get("temperature", 0.0)}
+        config["max_retries"] = kwargs.get("max_retries", 0)
         if "api_key" in kwargs:
             config["api_key"] = kwargs["api_key"]
         elif settings.OPENAI_API_KEY:
             config["api_key"] = settings.OPENAI_API_KEY
+        config.update({k: v for k, v in kwargs.items() if k not in ("temperature",)})
+        return config
+
+    def _get_deepseek_config(self, **kwargs) -> Dict[str, Any]:
+        config = {"temperature": kwargs.get("temperature", 0.0)}
+        if "api_key" in kwargs:
+            config["api_key"] = kwargs["api_key"]
+        elif settings.DEEPSEEK_API_KEY:
+            config["api_key"] = settings.DEEPSEEK_API_KEY
         config.update({k: v for k, v in kwargs.items() if k != "temperature"})
         return config
 
@@ -40,6 +50,18 @@ class LangchainModelLoader:
         config = self._get_openai_config(temperature=temperature, **kwargs)
         model = init_chat_model(model=settings.OPENAI_MODEL_REASONING, **config)
         self.models["openai_reasoning"] = model
+        return model
+
+    def init_model_deepseek_basic(self, temperature: float = 0.0, **kwargs) -> Any:
+        config = self._get_deepseek_config(temperature=temperature, **kwargs)
+        model = init_chat_model(model=settings.DEEPSEEK_MODEL_BASIC, **config)
+        self.models["deepseek_basic"] = model
+        return model
+
+    def init_model_deepseek_reasoning(self, temperature: float = 0.0, **kwargs) -> Any:
+        config = self._get_deepseek_config(temperature=temperature, **kwargs)
+        model = init_chat_model(model=settings.DEEPSEEK_MODEL_REASONING, **config)
+        self.models["deepseek_reasoning"] = model
         return model
 
     def init_chat_model_inference_server(self, temperature: float = 0.0, **kwargs) -> Any:
@@ -56,8 +78,8 @@ class LangchainModelLoader:
             top_p=kwargs.get("top_p", 0.90),
             openai_api_key=config["api_key"],
             openai_api_base=settings.INFERENCE_SERVER_URL,
-            request_timeout=450,
-            max_retries=3,
+            max_retries=0,
+            timeout=180
         )
         self.models["inference_server"] = model
         return model

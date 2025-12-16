@@ -1,16 +1,17 @@
 from typing import Any
 from langgraph.graph import StateGraph, START, END
-from src.agents.schemas.types import State, ReVerifyState
+from langgraph.types import RetryPolicy
+from src.agents.schemas.types import State, ReVerifyState, MaskerBatchState, QAAuditorState
 from src.agents.workflows.nodes import (
     llm_call_context_improver,
     llm_call_self_checker,
     llm_call_sensitive_data_classify,
     pii_worker,
     synthesizer,
-    route_check,
     assign_pii_workers,
-    llm_call_re_verify,
-    route_check_re_verify,
+    llm_call_re_verify_batch,
+    llm_call_masker_batch,
+    llm_call_qa_auditor,
 )
 from src.config.logs_config import get_logger
 
@@ -45,11 +46,11 @@ def build_workflow() -> Any:
     builder = StateGraph(State)
 
     # Add the nodes
-    builder.add_node("llm_call_context_improver", llm_call_context_improver)
-    builder.add_node("llm_call_self_checker", llm_call_self_checker)
-    builder.add_node("llm_call_sensitive_data_classify", llm_call_sensitive_data_classify)
-    builder.add_node("pii_worker", pii_worker)
-    builder.add_node("synthesizer", synthesizer)
+    builder.add_node("llm_call_context_improver", llm_call_context_improver, retry_policy=RetryPolicy(max_attempts=1))
+    builder.add_node("llm_call_self_checker", llm_call_self_checker, retry_policy=RetryPolicy(max_attempts=1))
+    builder.add_node("llm_call_sensitive_data_classify", llm_call_sensitive_data_classify, retry_policy=RetryPolicy(max_attempts=1))
+    builder.add_node("pii_worker", pii_worker, retry_policy=RetryPolicy(max_attempts=1))
+    builder.add_node("synthesizer", synthesizer, retry_policy=RetryPolicy(max_attempts=1))
 
     # Add edges to connect nodes
     builder.add_edge(START, "llm_call_sensitive_data_classify")
@@ -100,12 +101,79 @@ def build_re_verify_workflow() -> Any:
     builder = StateGraph(ReVerifyState)
 
     # Add the nodes
-    builder.add_node("re_verify", llm_call_re_verify)
+    builder.add_node("re_verify", llm_call_re_verify_batch, retry_policy=RetryPolicy(max_attempts=1))
     
     # Add edges to connect nodes
     builder.add_edge(START, "re_verify")
     builder.add_edge("re_verify", END)
     # builder.add_edge("missing_detections", END)
+    
+    # Compile the workflow
+    workflow = builder.compile()
+    
+    logger.info("Workflow compiled successfully")
+
+    return workflow
+
+
+def build_masker_workflow() -> Any:
+    """
+    Build and compile the masker workflow graph.
+    
+    This function creates a StateGraph workflow that processes transcripts through
+    multiple stages including masker batch
+    
+    Returns:
+        Compiled workflow graph ready for execution
+        
+    Workflow Flow:
+        1. START -> masker_batch
+        2. masker_batch -> END
+    """
+    logger.info("Building masker workflow...")
+    
+    # Build workflow
+    builder = StateGraph(MaskerBatchState)
+
+    # Add the nodes
+    builder.add_node("masker_batch", llm_call_masker_batch, retry_policy=RetryPolicy(max_attempts=1))
+    
+    # Add edges to connect nodes
+    builder.add_edge(START, "masker_batch")
+    builder.add_edge("masker_batch", END)
+    
+    # Compile the workflow
+    workflow = builder.compile()
+    
+    logger.info("Workflow compiled successfully")
+
+    return workflow
+
+def build_qa_auditor_workflow() -> Any:
+    """
+    Build and compile the qa auditor workflow graph.
+    
+    This function creates a StateGraph workflow that processes transcripts through
+    multiple stages including qa auditor
+    
+    Returns:
+        Compiled workflow graph ready for execution
+        
+    Workflow Flow:
+        1. START -> qa_auditor
+        2. qa_auditor -> END    
+    """
+    logger.info("Building qa auditor workflow...")
+    
+    # Build workflow
+    builder = StateGraph(QAAuditorState)
+
+    # Add the nodes
+    builder.add_node("qa_auditor", llm_call_qa_auditor)
+    
+    # Add edges to connect nodes
+    builder.add_edge(START, "qa_auditor")
+    builder.add_edge("qa_auditor", END) 
     
     # Compile the workflow
     workflow = builder.compile()

@@ -97,6 +97,70 @@ def extract_detections_with_timestamps(processed_chunks: List[Dict[str, Any]], b
     logger.info(f"Extracted {len(detections)} total detections from {len(processed_chunks)} chunks")
     return detections
 
+def extract_detections_by_chunk(processed_chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Extract detections grouped by chunk for Batch Re-Verify
+    
+    Args:
+        processed_chunks: List of processed chunks from the main workflow
+        
+    Returns:
+        List of Chunks, where each Chunk contains a list of its detections
+    """
+    chunks_with_detections = []
+    logger.info(f"Extracting detections by chunk from {len(processed_chunks)} processed chunks")
+    
+    for chunk in processed_chunks:
+        chunk_detections = []
+        
+        # Extract from masked_credit_cards
+        if chunk.get("has_credit_card") and "masked_credit_cards" in chunk:
+            for detection in chunk["masked_credit_cards"]:
+                detection_data = {
+                    "id": detection.get("id", f"det_{len(chunk_detections)}"),
+                    "type": detection.get("type", "card_number"),
+                    "original_text": detection.get("original_text", ""),
+                    "start_time": detection.get("start_time", 0),
+                    "end_time": detection.get("end_time", 0),
+                    "confidence": detection.get("confidence", 0),
+                    "source": "masked_credit_cards"
+                }
+                chunk_detections.append(detection_data)
+        
+        # Extract from Payment Agent results
+        if "workflow_result" in chunk:
+            if "completed_results" in chunk["workflow_result"]:
+                for result in chunk["workflow_result"]["completed_results"]:
+                    if result.get("agent") == "Agent_Payment":
+                        payment_result = result.get("result", {})
+                        if "detections" in payment_result and payment_result["detections"]:
+                            for detection in payment_result["detections"]:
+                                if detection.get("pii_type") == "PAYMENT":
+                                    # Avoid duplicates if possible (simple check by start time)
+                                    is_duplicate = any(abs(d["start_time"] - detection.get("start_time", 0)) < 0.1 for d in chunk_detections)
+                                    if not is_duplicate:
+                                        detection_data = {
+                                            "id": detection.get("id", f"payment_{len(chunk_detections)}"),
+                                            "type": "card_number",
+                                            "original_text": detection.get("raw_value", ""),
+                                            "start_time": detection.get("start_time", 0),
+                                            "end_time": detection.get("end_time", 0),
+                                            "confidence": detection.get("confidence", 0),
+                                            "source": "payment_agent"
+                                        }
+                                        chunk_detections.append(detection_data)
+        
+        if chunk_detections:
+            logger.debug(f"Chunk {chunk.get('chunk_id')} has {len(chunk_detections)} detections")
+            chunks_with_detections.append({
+                "chunk_id": chunk.get("chunk_id"),
+                "chunk_data": chunk, # Keep original chunk data for context extraction
+                "detections": chunk_detections
+            })
+            
+    logger.info(f"Found {len(chunks_with_detections)} chunks with detections for Batch Re-Verify")
+    return chunks_with_detections
+
 def calculate_context_windows(detections: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     Calculate context windows for each individual detection

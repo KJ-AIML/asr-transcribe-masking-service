@@ -1,13 +1,12 @@
-import json
 from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.types import Send
 
 from src.agents.schemas.types import (
     State,
     WorkerState,
-    SynthesizedPIIResult,
-
-    ReVerifyState
+    ReVerifyState,
+    MaskerBatchState,
+    QAAuditorState
 )
 from src.agents.agent_manager.agent_manager import AgentManager
 from src.agents.prompts.prompt_manager import PromptManager
@@ -108,8 +107,8 @@ async def assign_pii_workers(state: State):
         route_to_payment_agent = routing_plan['route_to_payment_agent']
         credit_card_sections = chunk_result['credit_card_sections']
 
-        logger.info(f"Route to payment agent: {route_to_payment_agent}")
-        logger.info(f"Credit card sections: {credit_card_sections}")
+        # logger.info(f"Route to payment agent: {route_to_payment_agent}")
+        # logger.info(f"Credit card sections: {credit_card_sections}")
         
         if not route_to_payment_agent:
             continue
@@ -133,10 +132,10 @@ async def assign_pii_workers(state: State):
             # This handles cases where PII Router detected digits but didn't populate digit_groups
             if total_digits and total_digits > 0:
                 has_valid_credit_card_data = True
-                logger.info(f"Section {section_type} has {total_digits} digits - processing")
+                # logger.info(f"Section {section_type} has {total_digits} digits - processing")
             elif digit_groups and len(digit_groups) > 0:
                 has_valid_credit_card_data = True
-                logger.info(f"Section {section_type} has {len(digit_groups)} digit groups - processing")
+                # logger.info(f"Section {section_type} has {len(digit_groups)} digit groups - processing")
             else:
                 logger.warning(f"Skipping section {section_type} - no digits detected (total_digits: {total_digits}, digit_groups: {digit_groups})")
                 continue
@@ -170,10 +169,10 @@ async def assign_pii_workers(state: State):
                 cvv_data.append(section_data)
             # Note: cardholder_name is not a standard section_type in the schema
         
-        logger.info(f"Card number data: {card_number_data}")
-        logger.info(f"Expiration date data: {expiration_date_data}")
-        logger.info(f"CVV data: {cvv_data}")
-        logger.info(f"Has valid credit card data: {has_valid_credit_card_data}")
+        # logger.info(f"Card number data: {card_number_data}")
+        # logger.info(f"Expiration date data: {expiration_date_data}")
+        # logger.info(f"CVV data: {cvv_data}")
+        # logger.info(f"Has valid credit card data: {has_valid_credit_card_data}")
         
         # CRITICAL: Only send to Payment Agent if we have valid credit card data with digits
         if route_to_payment_agent and has_valid_credit_card_data and (card_number_data or expiration_date_data or cvv_data):
@@ -217,8 +216,8 @@ async def assign_pii_workers(state: State):
                 }
                 
                 # Debug: Log data being sent to Payment Agent
-                logger.info(f"DEBUG: Sending to Payment Agent - card_number_sections: {len(pii_info_data['card_number_sections'])}")
-                logger.info(f"DEBUG: Card number data: {pii_info_data['card_number_sections']}")
+                # logger.info(f"DEBUG: Sending to Payment Agent - card_number_sections: {len(pii_info_data['card_number_sections'])}")
+                # logger.info(f"DEBUG: Card number data: {pii_info_data['card_number_sections']}")
                 
                 sends.append(
                     Send("pii_worker", {
@@ -288,7 +287,7 @@ async def pii_worker(state: WorkerState):
     
     result = await agent_manager.pii_sub_agent_worker.ainvoke(messages)
     
-    logger.info(f"DEBUG: Payment Agent result: {result}")
+    # logger.info(f"DEBUG: Payment Agent result: {result}")
 
     logger.info(f"=== PII Worker Completed: {state['agent_name']} ===")
     return {"completed_results": [{
@@ -426,6 +425,49 @@ async def llm_call_re_verify(state: ReVerifyState):
     
     return {"re_verify_results": [improve_response.model_dump()]}
 
+async def llm_call_re_verify_batch(state: ReVerifyState):         
+    """Call LLM to re-verify detections"""
+    logger.info("=== Processing transcript with re-verify node ===")
+    
+    # Extract detection data from state
+    detection_data = state.get('detection_data', {})
+    context_text = detection_data.get('context_text', '')
+    detections = detection_data.get('detections', [])
+
+    messages = [
+            SystemMessage(content=prompt_manager.re_verify_batch),
+            HumanMessage(content=f"""
+            Please analyze the transcript context below and re-verify the specific detections provided at the end.
+
+            ### Context Text (Source of Truth):
+            {context_text}
+
+            --------------------------------------------------
+
+            ### Detections to Verify (Target List):
+            {detections}
+            
+            Instruction: Process EVERY detection in the list above based on the context provided.
+            """)
+        ]
+    
+    response = await agent_manager.re_verify_batch.ainvoke(messages)
+
+    logger.info("=== Re-Verify Node Success ===")
+
+    # logger.info(f"Re-Verify Response: {response.model_dump()}")
+
+    improve_messages = [
+        SystemMessage(content=prompt_manager.consistency_checker_batch),
+        HumanMessage(content=response.model_dump_json())
+    ]
+    
+    improve_response = await agent_manager.consistency_checker_batch.ainvoke(improve_messages)
+    
+    # logger.info(f"Consistency Checker Response: {improve_response.model_dump()}")
+    
+    return {"re_verify_results": [improve_response.model_dump()]}
+
 async def llm_call_missing_detection(state: ReVerifyState):
     """Call LLM to verify missing detections"""
     logger.info("=== Processing transcript with missing detection node ===")
@@ -440,3 +482,108 @@ async def llm_call_missing_detection(state: ReVerifyState):
     logger.info("=== Missing Detection Node Success ===")
     # Return as a list with a single item to match expected format
     return {"missing_detection_results": [response.model_dump()]}
+
+async def llm_call_masker_batch(state: MaskerBatchState):
+    """Call LLM to mask data"""
+    logger.info("=== Processing transcript with masker node ===")
+    
+    # Extract detection data from state
+    if isinstance(state, dict):
+        detection_data = state.get("detection_data", {})
+    else:
+        detection_data = getattr(state, "detection_data", {}) if hasattr(state, "detection_data") else {}
+
+    # Ensure detection_data is a dict
+    if not isinstance(detection_data, dict):
+        detection_data = {}
+
+    transcript = detection_data.get('transcript_text', '')
+    detections = detection_data.get('detections', [])
+
+    messages = [
+        SystemMessage(content=prompt_manager.masker_batch),
+        HumanMessage(content=f"""
+            Please analyze the transcript context below and mask the specific detections provided at the end.
+
+            ### Context Text (Source of Truth):
+            {transcript}
+
+            --------------------------------------------------
+
+            ### Detections to Mask (Target List):
+            {detections}
+            
+            Instruction: Process EVERY detection in the list above based on the context provided.
+            """)
+        ]
+    
+    response = await agent_manager.masker_batch.ainvoke(messages)
+    
+    logger.info("=== Masker Node Success ===")
+    return {"masker_results": [response.model_dump()]}
+
+async def llm_call_qa_auditor(state: QAAuditorState):
+    """Call LLM to audit masked transcript"""
+    logger.info("=== Processing transcript with QA Auditor node ===")
+    
+    # Extract data from state with proper type checking
+    if isinstance(state, dict):
+        masked_transcript = state.get("masked_transcript", "")
+        original_transcript = state.get("original_transcript", "")
+        detections = state.get("detections", [])
+        chunk_id = state.get("chunk_id", 0)
+        current_chunk_start = state.get("current_chunk_start", 0)
+        context_direction = state.get("context_direction", "both")
+        context_query = state.get("context_query", "")
+    else:
+        masked_transcript = getattr(state, "masked_transcript", "") if hasattr(state, "masked_transcript") else ""
+        original_transcript = getattr(state, "original_transcript", "") if hasattr(state, "original_transcript") else ""
+        detections = getattr(state, "detections", []) if hasattr(state, "detections") else []
+        chunk_id = getattr(state, "chunk_id", 0) if hasattr(state, "chunk_id") else 0
+        current_chunk_start = getattr(state, "current_chunk_start", 0) if hasattr(state, "current_chunk_start") else 0
+        context_direction = getattr(state, "context_direction", "both") if hasattr(state, "context_direction") else "both"
+        context_query = getattr(state, "context_query", "") if hasattr(state, "context_query") else ""
+    
+    # Ensure detections is a list
+    if not isinstance(detections, list):
+        detections = []
+        logger.info(f"Invalid detections format for chunk {chunk_id}: {detections}")
+    
+    # Format detections for LLM
+    detections_text = ""
+    if detections:
+        detections_text = "\n".join([
+            f"- {det.get('detection_type', 'unknown')}: '{det.get('original_text', '')}' at {det.get('start_time', 0):.2f}s-{det.get('end_time', 0):.2f}s"
+            for det in detections
+        ])
+    
+    # logger.info(f"masked_transcript: {masked_transcript} detections: {detections}")
+
+    messages = [
+        SystemMessage(content=prompt_manager.qa_auditor),
+        HumanMessage(content=f"""
+            Please audit the masked transcript for accuracy by comparing it with the original transcript and detections.
+            
+            ### Chunk ID: {chunk_id}
+            
+            ### Original Transcript:
+            {original_transcript}
+            
+            ### Masked Transcript:
+            {masked_transcript}
+            
+            ### Detections in this chunk:
+            {detections_text if detections_text else "No detections in this chunk"}
+            
+            Please check for:
+            1. MissingMask: Sensitive data that should be masked but isn't
+            2. OverMask: Non-sensitive data that was incorrectly masked
+            3. WrongMask: Incorrect masking pattern or format
+        """)
+    ]
+    
+    response = await agent_manager.qa_auditor.ainvoke(messages)
+
+    # logger.info(f"QA Auditor Response: {response.model_dump()}")
+
+    return {"qa_auditor_results": [response.model_dump()]}

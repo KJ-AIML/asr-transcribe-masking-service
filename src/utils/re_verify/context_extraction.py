@@ -4,7 +4,7 @@ This module provides functions to extract text context for Re-Verify workflow
 with different context window sizes and analysis capabilities.
 """
 
-from typing import Dict, List, Any, Tuple
+from typing import Dict, List, Any
 from src.config.logs_config import get_logger
 
 def extract_context_with_segments(
@@ -148,6 +148,124 @@ def prepare_re_verify_input(
             "original_end": end_time,
             "before_seconds": before_seconds,
             "after_seconds": after_seconds
+        }
+    }
+
+def prepare_batch_re_verify_input(
+    chunk_data: Dict[str, Any],
+    chunk_detections: List[Dict[str, Any]],
+    transcript_data: Dict[str, Any],
+    before_seconds: float = 45.0,
+    after_seconds: float = 10.0
+) -> Dict[str, Any]:
+    """
+    Prepare input for Batch Re-Verify Agent
+    
+    Args:
+        chunk_data: The original chunk data containing start/end times
+        chunk_detections: List of detections within this chunk
+        transcript_data: Full transcript data
+        before_seconds: Buffer before chunk start
+        after_seconds: Buffer after chunk end
+        
+    Returns:
+        Dictionary containing 'context_text' and 'detections' list
+    """
+    # Determine context window based on chunk boundaries
+    # We use the chunk's time range + buffer as the context
+    # Try multiple paths to get chunk_start and chunk_end
+    chunk_start = 0
+    chunk_end = 0
+    
+    # Option 1: Direct from metadata
+    if "metadata" in chunk_data and chunk_data["metadata"]:
+        chunk_start = chunk_data["metadata"].get("chunk_start", 0)
+        chunk_end = chunk_data["metadata"].get("chunk_end", 0)
+    
+    # Option 2: If metadata doesn't have it, try direct properties
+    if chunk_start == 0 and chunk_end == 0:
+        chunk_start = chunk_data.get("chunk_start", 0)
+        chunk_end = chunk_data.get("chunk_end", 0)
+    
+    # Option 3: If still 0, try to get from detections
+    if chunk_start == 0 and chunk_end == 0 and chunk_detections:
+        start_times = [d.get("start_time", 0) for d in chunk_detections]
+        end_times = [d.get("end_time", 0) for d in chunk_detections]
+        chunk_start = min(start_times) if start_times else 0
+        chunk_end = max(end_times) if end_times else 0
+    
+    context_start = max(0, chunk_start - before_seconds)
+    context_end = chunk_end + after_seconds
+    
+    # Debug logging
+    logger = get_logger(__name__)
+    logger.debug(f"Chunk boundaries: start={chunk_start}, end={chunk_end}")
+    logger.debug(f"Context window: start={context_start}, end={context_end}")
+    
+    # Extract context text using existing helper
+    # We reuse extract_context_with_segments logic but need to handle transcript structure
+    # Since transcript_data might be complex, we'll reuse the logic from prepare_re_verify_input
+    # to find segments first
+    
+    segments = []
+    
+    # Debug: Log transcript structure
+    logger.debug(f"Transcript keys: {list(transcript_data.keys())}")
+    
+    if "segments" in transcript_data:
+        segments = transcript_data["segments"]
+        logger.debug(f"Found {len(segments)} segments directly in transcript")
+    elif "transcript" in transcript_data and isinstance(transcript_data["transcript"], dict):
+        if "segments" in transcript_data["transcript"]:
+            segments = transcript_data["transcript"]["segments"]
+            logger.debug(f"Found {len(segments)} segments in transcript.transcript")
+            
+    # Fallback to simple text if no segments (same as before)
+    if not segments:
+        logger.warning(f"No segments found in transcript. Available keys: {list(transcript_data.keys())}")
+        if "simple_text" in transcript_data:
+            segments = [{"start": 0, "end": context_end, "text": transcript_data["simple_text"], "channel": "unknown"}]
+            logger.debug("Created fallback segment from simple_text")
+        elif "text" in transcript_data:
+            segments = [{"start": 0, "end": context_end, "text": transcript_data["text"], "channel": "unknown"}]
+            logger.debug("Created fallback segment from text")
+
+    # Filter segments for this chunk's context
+    context_segments = [
+        seg for seg in segments
+        if seg["start"] < context_end and seg["end"] > context_start
+    ]
+    
+    logger.debug(f"Extracted {len(context_segments)} segments within context window [{context_start:.2f} - {context_end:.2f}]")
+    
+    context_text = "\n".join([
+        f"[{seg['start']:.2f} --> {seg['end']:.2f}] [{seg['channel']}]: {seg['text']}"
+        for seg in context_segments
+    ])
+    
+    logger.debug(f"Context text length: {len(context_text)} characters")
+    
+    # Format detections for the prompt
+    # The prompt expects: id, type, original_text, start_time, end_time
+    formatted_detections = []
+    for d in chunk_detections:
+        formatted_detections.append({
+            "id": d["id"],
+            "type": d["type"],
+            "original_text": d["original_text"],
+            "start_time": d["start_time"],
+            "end_time": d["end_time"]
+        })
+        
+    return {
+        "context_text": context_text,
+        "detections": formatted_detections,
+        "metadata": {
+            "chunk_id": chunk_data.get("chunk_id"),
+            "context_window": {
+                "start": context_start,
+                "end": context_end
+            }
         }
     }
 

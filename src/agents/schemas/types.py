@@ -1,7 +1,7 @@
 import operator
 from typing import Annotated
 from pydantic import BaseModel, Field
-from typing_extensions import TypedDict, Literal, Optional, List
+from typing_extensions import TypedDict, Literal, Optional, List, Dict, Any
 
 # Stage 
 class State(TypedDict):
@@ -288,12 +288,144 @@ class ReVerifyResult(BaseModel):
         )
     )
 
+class ReVerifyBatchIndividualResult(BaseModel):
+    """Individual result from Re-Verify batch agent"""
+    id: str = Field(..., description="Unique identifier for this re-verify result do not changes from original")
+    detection_id: str = Field(..., description="Detection identifier from the original detection")
+    detection_type: str = Field(..., description="Type of detection (e.g., card_number)")
+    original_text: str = Field(..., description="Original text being analyzed")
+    reasoning: str = Field(
+        ..., 
+        description="Step-by-step analysis. If you find ID/Address/Policy, write 'FAIL'. If Card/Expiry, write 'PASS'."
+    )
+    status: Literal["success", "error"] = Field(..., description="Processing status")
+    recommendation: Literal["PASS", "FAIL"] = Field(
+        ..., 
+        description=(
+            "DECISION OUTPUT:\n"
+            "- IF reasoning identifies 'ID Card', 'National ID', or 'Postal Code' -> YOU MUST OUTPUT 'FAIL'.\n"
+            "- IF reasoning identifies 'Credit/Debit Card' -> YOU MUST OUTPUT 'PASS'.\n"
+            "Do not output PASS just because you successfully identified an ID card."
+        )
+    )
+    likely_category: Literal["credit_debit_card", "id_card", "phone_number", "postal_code", "expiration_date", "policy_number", "other"] = Field(
+        ..., 
+        description="Likely category of the detected PII"
+    )
+    confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence score for the detection")
+
+class ReVerifyBatchResult(BaseModel):
+    """Result from Re-Verify batch agent"""
+    results: List[ReVerifyBatchIndividualResult] = Field(
+        default_factory=list,
+        description="List re-verify results with id, status, and reasoning"
+    )
+
 class ConsistencyCheckerResult(BaseModel):
     """Result from Consistency Checker agent"""
     reasoning: str = Field(..., description="Step-by-step analysis of consistency")
     status: Literal["PASS", "FAIL"] = Field(..., description="Consistency Checker status")
 
+class ConsistencyCheckerBatchIndividualResult(BaseModel):
+    """Result from Consistency Checker batch agent"""
+    id: str = Field(..., description="Unique identifier for this re-verify result do not changes from original")
+    detection_id: str = Field(..., description="Detection identifier from the original detection")
+    detection_type: str = Field(..., description="Type of detection (e.g., card_number)")
+    original_text: str = Field(..., description="Original text being analyzed")
+    reasoning: str = Field(
+        ..., 
+        description="Step-by-step analysis of consistency"
+    )
+    status: Literal["success", "error"] = Field(..., description="Processing status")
+    recommendation: Literal["PASS", "FAIL"] = Field(
+        ..., 
+        description=(
+            "DECISION OUTPUT:\n"
+            "- IF reasoning identifies 'ID Card', 'National ID', or 'Postal Code' -> YOU MUST OUTPUT 'FAIL'.\n"
+            "- IF reasoning identifies 'Credit/Debit Card' -> YOU MUST OUTPUT 'PASS'.\n"
+            "Do not output PASS just because you successfully identified an ID card."
+        )
+    )
+    likely_category: Literal["credit_debit_card", "id_card", "phone_number", "postal_code", "expiration_date", "policy_number", "other"] = Field(
+        ..., 
+        description="Likely category of the detected PII"
+    )
+    confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence score for detection")
+
+
+class ConsistencyCheckerResultBatch(BaseModel):
+    """Result from Consistency Checker batch agent"""
+    results: List[ConsistencyCheckerBatchIndividualResult] = Field(
+        ..., 
+        description="List consistency checker results with id, status, and reasoning"
+    )
+
+
 class MissingDetectionResult(BaseModel):
     """Result from Missing Detection agent"""
     status: Literal["PASS", "FAIL"] = Field(..., description="Missing Detection status")
     reason: Optional[str] = Field(None, description="Reason for the status")
+
+
+class MaskerBatchState(BaseModel):
+    """State for Masker batch agent"""
+    detection_data: dict
+    masker_results: dict
+
+class MaskerBatchIndividualResult(BaseModel):
+    """Individual result from Masker batch agent"""
+    id: str = Field(..., description="Unique identifier for this masker result do not changes from original")
+    detection_id: str = Field(..., description="Detection identifier from the original detection")
+    detection_type: str = Field(..., description="Type of detection (e.g., card_number)")
+    original_text: str = Field(..., description="Original text being analyzed")
+    mask_result: Literal["Masked", "Rejected"] = Field(..., description="Masked result of the original text")
+    reasoning: str = Field(..., description="Step-by-step analysis of the masking decision")
+
+class MaskerBatchResult(BaseModel):
+    """Result from Masker batch agent"""
+    transcript: str = Field(..., description="Transcript with masked data")
+    masker_results: List[MaskerBatchIndividualResult] = Field(
+        default_factory=list,
+        description="List of masker results with id, detection_id, detection_type, original_text, and mask_result"
+    )
+
+class QAAuditorState(TypedDict):
+    masked_transcript: str
+    original_transcript: str
+    detections: list
+    current_chunk_start: float
+    context_direction: str
+    context_query: str
+    qa_auditor_results: dict
+
+class QAAuditorError(BaseModel):
+    """Error details found during QA audit"""
+    error_type: str = Field(..., description="Type of error (MissingMask, OverMask, WrongMask)")
+    detection_id: str = Field(..., description="ID of the detection that has the error")
+    description: str = Field(..., description="Description of the error")
+    location: str = Field(..., description="Location in the transcript where error occurred")
+    severity: str = Field(..., description="Severity level of the error")
+
+class QAAuditorResult(BaseModel):
+    """Result from QA Auditor agent"""
+    reasoning: str = Field(..., description="Step-by-step analysis of the QA audit")
+    status: Literal["PASS", "FAIL"] = Field(..., description="QA Auditor status")
+    errors_found: Optional[List[QAAuditorError]] = Field(default=[], description="List of errors found during audit")
+    quality_score: Optional[float] = Field(default=None, description="Quality score of the masking (0.0-1.0)")
+    recommendations: Optional[List[str]] = Field(default=[], description="Recommendations for improving masking")
+
+class ContextExtensionArgs(BaseModel):
+    base_start_time: float
+    direction: str = "backward"
+    duration: float = 50.0
+    transcript_data: Optional[Dict[str, Any]] = None
+
+class DetectionsInRangeArgs(BaseModel):
+    start_time: float
+    end_time: float
+    detections_data: Optional[List[Dict[str, Any]]] = None
+
+class OriginalTextRangeArgs(BaseModel):
+    start_time: float
+    end_time: float
+    transcript_data: Optional[Dict[str, Any]] = None

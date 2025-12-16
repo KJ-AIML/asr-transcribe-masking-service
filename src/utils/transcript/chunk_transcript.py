@@ -1,5 +1,4 @@
-import json
-from typing import Dict, List, Any, Optional
+from typing import Dict, Any
 
 from src.config.logs_config import get_logger
 
@@ -158,7 +157,7 @@ def log_chunk_summary(chunked_result: Dict[str, Any]) -> None:
         chunked_result: The result from chunk_transcript function
     """
     config = chunked_result["chunking_config"]
-    logger.info(f"Chunking Summary:")
+    logger.info("Chunking Summary:")
     logger.info(f"  Total Duration: {config['total_duration']}s")
     logger.info(f"  Chunk Duration: {config['chunk_duration']}s")
     logger.info(f"  Overlap Duration: {config['overlap_duration']}s")

@@ -1,4 +1,6 @@
 from typing import Optional, Dict, Any
+from langchain.agents import create_agent
+from langchain.agents.structured_output import ToolStrategy
 from src.agents.schemas.types import (
     Agent1Output, 
     SelfCheckerResult, 
@@ -7,10 +9,19 @@ from src.agents.schemas.types import (
     AgentPaymentOutput,
     ReVerifyResult,
     ConsistencyCheckerResult,
-    MissingDetectionResult
+    MissingDetectionResult,
+    ReVerifyBatchResult,
+    ConsistencyCheckerResultBatch,
+    MaskerBatchResult,
+    QAAuditorResult
 )
 from src.models.langchain_model_loader import LangchainModelLoader
 from src.config.logs_config import get_logger
+from src.agents.tools.tools import (
+    get_context_extension,
+    get_detections_in_range,
+    get_original_text_range
+)
 
 logger = get_logger(__name__)
 
@@ -28,8 +39,27 @@ class AgentManager:
             "pii_sub_agent_worker": PIIWorkerOutput,
             "agent_payment": AgentPaymentOutput,
             "re_verify_agent": ReVerifyResult,
+            "re_verify_batch_agent": ReVerifyBatchResult,
+            "consistency_checker": ConsistencyCheckerResult,
+            "consistency_checker_batch": ConsistencyCheckerResultBatch,
+            "masker_batch_agent": MaskerBatchResult,
             "missing_detection_agent": MissingDetectionResult,
-            "consistency_checker": ConsistencyCheckerResult
+            "qa_auditor": QAAuditorResult,
+        }
+
+        self._agent_tools = {
+            "context_improver": [],
+            "self_checker": [],
+            "sensitive_data_detector": [],
+            "pii_sub_agent_worker": [],
+            "agent_payment": [],
+            "re_verify_agent": [],
+            "re_verify_batch_agent": [],
+            "consistency_checker": [],
+            "consistency_checker_batch": [],
+            "masker_batch_agent": [],
+            "missing_detection_agent": [],
+            "qa_auditor": [get_context_extension, get_detections_in_range, get_original_text_range],
         }
 
     @property
@@ -55,6 +85,26 @@ class AgentManager:
             if name in self._agent_names:
                 try:
                     self._agents[name] = self.model.with_structured_output(self._agent_names[name])
+                    logger.debug(f"Agent '{name}' created and cached")
+                except Exception as e:
+                    logger.error(f"Failed to create agent '{name}': {e}")
+                    return None
+            else:
+                logger.warning(f"Unknown agent name: {name}")
+                return None
+        
+        return self._agents.get(name)
+
+    def get_agent_with_tools(self, name: str) -> Optional[Any]:
+        """Get an agent by name, creating it if necessary"""
+        if name not in self._agents:
+            if name in self._agent_names:
+                try:
+                    self._agents[name] = create_agent(
+                        model=self.model,
+                        tools=self._agent_tools[name],
+                        response_format=ToolStrategy(self._agent_names[name], handle_errors=True),
+                    )
                     logger.debug(f"Agent '{name}' created and cached")
                 except Exception as e:
                     logger.error(f"Failed to create agent '{name}': {e}")
@@ -97,14 +147,39 @@ class AgentManager:
         return self.get_agent("re_verify_agent")
 
     @property
+    def re_verify_batch(self):
+        """Get the Re-Verify batch agent"""
+        return self.get_agent("re_verify_batch_agent")
+
+    @property
     def consistency_checker(self):
         """Get the Consistency Checker agent"""
         return self.get_agent("consistency_checker")
 
     @property
+    def consistency_checker_batch(self):
+        """Get the Consistency Checker batch agent"""
+        return self.get_agent("consistency_checker_batch")
+
+    @property
+    def masker_batch(self):
+        """Get the Masker batch agent"""
+        return self.get_agent("masker_batch_agent")
+
+    @property
     def missing_detection(self):
         """Get the Missing Detection agent"""
         return self.get_agent("missing_detection_agent")
+    
+    # @property
+    # def qa_auditor(self):
+    #     """Get the QA Auditor agent"""
+    #     return self.get_agent_with_tools("qa_auditor")
+
+    @property
+    def qa_auditor(self):
+        """Get the QA Auditor agent"""
+        return self.get_agent("qa_auditor")
 
     def list_available_agents(self) -> list:
         """List all available agent names"""

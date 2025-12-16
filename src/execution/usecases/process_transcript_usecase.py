@@ -1,19 +1,21 @@
-from typing import Dict, List, Any
+from typing import Dict, Any
 import asyncio
 from src.config.logs_config import get_logger
 from src.execution.actions.process_transcript_action import ProcessTranscriptAction
 from src.execution.actions.process_transcript_reverify_action import ProcessTranscriptReVerifyAction
+from src.execution.actions.process_transcript_masker_action import ProcessTranscriptMaskerAction
 from src.utils.transcript.chunk_transcript import chunk_transcript
 from src.utils.transcript.prase_transcript import parse_transcription
-from src.utils.re_verify.timestamp_extraction import extract_detections_with_timestamps
-from src.utils.re_verify.context_extraction import prepare_re_verify_input
+from src.utils.re_verify.timestamp_extraction import extract_detections_by_chunk
+from src.utils.re_verify.context_extraction import prepare_batch_re_verify_input
 
 logger = get_logger(__name__)
 
 class ProcessTranscriptUseCase:
-    def __init__(self, action: ProcessTranscriptAction, re_verify_action: ProcessTranscriptReVerifyAction = None):
+    def __init__(self, action: ProcessTranscriptAction, re_verify_action: ProcessTranscriptReVerifyAction = None, masker_action: ProcessTranscriptMaskerAction = None):
         self.action = action
         self.re_verify_action = re_verify_action
+        self.masker_action = masker_action
     
     async def execute(self, transcript_data: Dict[str, Any]) -> Dict[str, Any]:
         """Process transcript for credit card detection"""
@@ -60,8 +62,8 @@ class ProcessTranscriptUseCase:
         async def process_single_chunk(chunk):
             async with semaphore:
                 chunk_id = chunk["metadata"]["chunk_index"]
-                retries = 3
-                base_delay = 15.0
+                retries = 1
+                base_delay = 3.0
                 
                 for attempt in range(retries + 1):
                     try:
@@ -129,6 +131,99 @@ class ProcessTranscriptUseCase:
             processed_chunks = await asyncio.gather(*tasks)
             # Sort by chunk_id to maintain order
             processed_chunks.sort(key=lambda x: x["chunk_id"])
+            
+            # Check for failed chunks and retry them
+            failed_chunks = [c for c in processed_chunks if c.get("status") == "failed"]
+            if failed_chunks:
+                logger.warning(f"Found {len(failed_chunks)} failed chunks, retrying...")
+                
+                # Retry failed chunks with a higher retry count
+                async def retry_failed_chunk(chunk_result):
+                    chunk_id = chunk_result["chunk_id"]
+                    # Find the original chunk data
+                    original_chunk = next(c for c in chunked_result["chunks"] 
+                                        if c["metadata"]["chunk_index"] == chunk_id)
+                    
+                    retries = 3
+                    base_delay = 5.0
+                    
+                    for attempt in range(retries):
+                        try:
+                            logger.info(f"Retrying failed chunk {chunk_id} (Attempt {attempt + 1}/{retries})")
+                            
+                            # ส่งเข้า workflow
+                            workflow_result = await self.action.execute(original_chunk)
+                            
+                            # เช็คผลลัพธ์
+                            has_credit_card = self._has_credit_card_data(workflow_result)
+                            
+                            # Always store workflow_result for Payment Agent detection extraction
+                            subagent_response = workflow_result.get("subagent_response", {})
+                            
+                            if has_credit_card:
+                                # Extract masked credit cards from the new structure
+                                masking_results = subagent_response.get("masking_results", [])
+                                
+                                return {
+                                    "chunk_id": chunk_id,
+                                    "has_credit_card": True,
+                                    "status": "credit_card_found",
+                                    "masked_credit_cards": masking_results,
+                                    "summary": subagent_response.get("summary", {}),
+                                    "timestamp_range": {
+                                        "start": original_chunk["metadata"]["chunk_start"],
+                                        "end": original_chunk["metadata"]["chunk_end"]
+                                    },
+                                    "workflow_result": workflow_result
+                                }
+                            else:
+                                return {
+                                    "chunk_id": chunk_id,
+                                    "has_credit_card": False,
+                                    "status": "no_credit_card_found",
+                                    "timestamp_range": {
+                                        "start": original_chunk["metadata"]["chunk_start"],
+                                        "end": original_chunk["metadata"]["chunk_end"]
+                                    },
+                                    "workflow_result": workflow_result
+                                }
+                                
+                        except Exception as e:
+                            if attempt < retries - 1:
+                                delay = base_delay * (2 ** attempt)
+                                logger.warning(f"Retry chunk {chunk_id} failed (Attempt {attempt + 1}/{retries}): {str(e)}. Retrying in {delay}s...")
+                                await asyncio.sleep(delay)
+                            else:
+                                logger.error(f"Retry chunk {chunk_id} failed after {retries} attempts: {str(e)}")
+                                # Return the original failed result
+                                return chunk_result
+                
+                # Process retries with semaphore to control concurrency
+                retry_semaphore = asyncio.Semaphore(3)
+                retry_tasks = []
+                
+                async def process_with_semaphore(chunk_result):
+                    async with retry_semaphore:
+                        return await retry_failed_chunk(chunk_result)
+                
+                retry_tasks = [process_with_semaphore(c) for c in failed_chunks]
+                if retry_tasks:
+                    retry_results = await asyncio.gather(*retry_tasks)
+                    
+                    # Replace failed chunks with retry results
+                    for retry_result in retry_results:
+                        for i, chunk in enumerate(processed_chunks):
+                            if chunk["chunk_id"] == retry_result["chunk_id"]:
+                                processed_chunks[i] = retry_result
+                                break
+                    
+                    # Sort again to maintain order
+                    processed_chunks.sort(key=lambda x: x["chunk_id"])
+                    
+                    # Log retry summary
+                    successful_retries = sum(1 for c in failed_chunks 
+                                           if c.get("status") != "failed")
+                    logger.info(f"Successfully retried {successful_retries}/{len(failed_chunks)} chunks")
         
         # สรุมผล
         result = {
@@ -142,70 +237,227 @@ class ProcessTranscriptUseCase:
                 "overlap": 10.0
             }
         }
+
+        # Check for chunks with failed workflow_result before Batch Re-Verify
+        failed_workflow_chunks = []
+        for chunk in processed_chunks:
+            if chunk.get("workflow_result", {}).get("status") == "failed":
+                failed_workflow_chunks.append(chunk)
+        
+        if failed_workflow_chunks:
+            logger.warning(f"Found {len(failed_workflow_chunks)} chunks with failed workflow but credit card detected, retrying...")
+            
+            # Retry failed workflow chunks with higher retry count
+            async def retry_failed_workflow_chunk(chunk):
+                chunk_id = chunk["chunk_id"]
+                # Find the original chunk data
+                original_chunk = next(c for c in chunked_result["chunks"] 
+                                    if c["metadata"]["chunk_index"] == chunk_id)
+                
+                retries = 5
+                base_delay = 5.0
+                
+                for attempt in range(retries):
+                    try:
+                        logger.info(f"Retrying failed workflow chunk {chunk_id} (Attempt {attempt + 1}/{retries})")
+                        
+                        # ส่งเข้า workflow
+                        workflow_result = await self.action.execute(original_chunk)
+                        
+                        # เช็คผลลัพธ์
+                        has_credit_card = self._has_credit_card_data(workflow_result)
+                        
+                        # Always store workflow_result for Payment Agent detection extraction
+                        subagent_response = workflow_result.get("subagent_response", {})
+                        
+                        if has_credit_card:
+                            # Extract masked credit cards from the new structure
+                            masking_results = subagent_response.get("masking_results", [])
+                            
+                            return {
+                                "chunk_id": chunk_id,
+                                "has_credit_card": True,
+                                "status": "credit_card_found",
+                                "masked_credit_cards": masking_results,
+                                "summary": subagent_response.get("summary", {}),
+                                "timestamp_range": {
+                                    "start": original_chunk["metadata"]["chunk_start"],
+                                    "end": original_chunk["metadata"]["chunk_end"]
+                                },
+                                "workflow_result": workflow_result
+                            }
+                        else:
+                            return {
+                                "chunk_id": chunk_id,
+                                "has_credit_card": False,
+                                "status": "no_credit_card_found",
+                                "timestamp_range": {
+                                    "start": original_chunk["metadata"]["chunk_start"],
+                                    "end": original_chunk["metadata"]["chunk_end"]
+                                },
+                                "workflow_result": workflow_result
+                            }
+                            
+                    except Exception as e:
+                        if attempt < retries - 1:
+                            delay = base_delay * (2 ** attempt)
+                            logger.warning(f"Retry workflow chunk {chunk_id} failed (Attempt {attempt + 1}/{retries}): {str(e)}. Retrying in {delay}s...")
+                            await asyncio.sleep(delay)
+                        else:
+                            logger.error(f"Retry workflow chunk {chunk_id} failed after {retries} attempts: {str(e)}")
+                            # Return the original failed result
+                            return chunk_result
+            
+            # Process retries with semaphore to control concurrency
+            retry_semaphore = asyncio.Semaphore(3)
+            retry_tasks = []
+            
+            async def process_with_semaphore(chunk):
+                async with retry_semaphore:
+                    return await retry_failed_workflow_chunk(chunk)
+            
+            retry_tasks = [process_with_semaphore(c) for c in failed_workflow_chunks]
+            if retry_tasks:
+                retry_results = await asyncio.gather(*retry_tasks)
+                
+                # Replace failed chunks with retry results
+                for retry_result in retry_results:
+                    for i, chunk in enumerate(processed_chunks):
+                        if chunk["chunk_id"] == retry_result["chunk_id"]:
+                            processed_chunks[i] = retry_result
+                            break
+                
+                # Update result statistics
+                result["chunks_with_credit_card"] = sum(1 for c in processed_chunks if c["has_credit_card"])
+                
+                # Log retry summary
+                successful_retries = sum(1 for c in retry_results 
+                                       if c.get("workflow_result", {}).get("status") != "failed")
+                logger.info(f"Successfully retried {successful_retries}/{len(failed_workflow_chunks)} workflow chunks")
         
         # Re-Verify process (if re_verify_action is provided)
         re_verify_results = []
         if self.re_verify_action and result["chunks_with_credit_card"] > 0:
-            logger.info("Starting Re-Verify process for individual detections")
+            logger.info("Starting Batch Re-Verify process")
             
-            # Extract individual detections with timestamps
-            detections = extract_detections_with_timestamps(processed_chunks, before_seconds=30.0, after_seconds=10.0)
-            logger.info(f"Found {len(detections)} individual detections for Re-Verify")
+            # Extract detections grouped by chunk
+            chunks_with_detections = extract_detections_by_chunk(processed_chunks)
+            logger.info(f"Found {len(chunks_with_detections)} chunks with detections for Batch Re-Verify")
             
-            # Process each detection individually
+            # Process each chunk as a batch
             re_verify_semaphore = asyncio.Semaphore(9)
 
-            async def process_single_reverify(i, detection):
+            async def process_batch_reverify(i, chunk_data):
                 async with re_verify_semaphore:
                     retries = 3
-                    base_delay = 2.0
+                    base_delay = 3.0
+                    chunk_id = chunk_data["chunk_id"]
                     
                     for attempt in range(retries + 1):
                         try:
-                            logger.info(f"Processing detection {i+1}/{len(detections)}: {detection['detection']['type']} (Attempt {attempt + 1})")
+                            logger.info(f"Processing batch chunk {chunk_id} ({len(chunk_data['detections'])} detections) (Attempt {attempt + 1})")
                             
-                            # Prepare input for re-verify
-                            re_verify_input = prepare_re_verify_input(detection, transcript_data)
+                            # Prepare batch input
+                            batch_input = prepare_batch_re_verify_input(
+                                chunk_data["chunk_data"], 
+                                chunk_data["detections"], 
+                                transcript_data
+                            )
+
+                            # logger.info(f"Batch Re-Verify input: {batch_input}")
                             
-                            # Execute re-verify workflow
-                            re_verify_result = await self.re_verify_action.execute(re_verify_input)
-                            logger.info(f"Re-Verify completed for detection {i+1}")
-                            return {
-                                "detection_id": detection["detection"].get("id", f"det_{i}"),
-                                "detection_type": detection["detection"]["type"],
-                                "original_text": detection["detection"]["original_text"],
-                                "re_verify_result": re_verify_result,
-                                "context_window": detection["context_window"]
-                            }
+                            # Execute batch re-verify workflow
+                            batch_result = await self.re_verify_action.execute(batch_input)
+                            logger.info(f"Batch Re-Verify completed for chunk {chunk_id}")
+                            
+                            # Map results back to individual detections structure for compatibility
+                            mapped_results = []
+                            results_list = batch_result.get("re_verify_results", [])
+                            
+                            # Handle nested results structure (from workflow)
+                            # The results might be nested under "results" key
+                            actual_results = []
+                            for item in results_list:
+                                if isinstance(item, dict) and "results" in item:
+                                    actual_results.extend(item["results"])
+                                else:
+                                    actual_results.append(item)
+                            
+                            # Create a map for quick lookup using detection_id
+                            results_map = {r.get("detection_id"): r for r in actual_results}
+                            
+                            for detection in chunk_data["detections"]:
+                                det_id = detection["id"]
+                                result_data = results_map.get(det_id, {"status": "error", "error": "Missing from batch result"})
+                                
+                                mapped_results.append({
+                                    "detection_id": det_id,
+                                    "detection_type": detection["type"],
+                                    "original_text": detection["original_text"],
+                                    "start_time": detection.get("start_time"),
+                                    "end_time": detection.get("end_time"),
+                                    "re_verify_result": result_data,
+                                    "chunk_id": chunk_id
+                                })
+                                
+                            return mapped_results
+                            
                         except Exception as e:
                             if attempt < retries:
                                 delay = base_delay * (2 ** attempt)
-                                logger.warning(f"Re-Verify detection {i+1} failed (Attempt {attempt + 1}/{retries + 1}): {str(e)}. Retrying in {delay}s...")
+                                logger.warning(f"Batch Re-Verify chunk {chunk_id} failed (Attempt {attempt + 1}/{retries + 1}): {str(e)}. Retrying in {delay}s...")
                                 await asyncio.sleep(delay)
                             else:
-                                logger.error(f"Re-Verify failed for detection {i+1} after {retries + 1} attempts: {str(e)}")
-                                return {
-                                    "detection_id": detection["detection"].get("id", f"det_{i}"),
-                                    "detection_type": detection["detection"]["type"],
-                                    "original_text": detection["detection"]["original_text"],
+                                logger.error(f"Batch Re-Verify failed for chunk {chunk_id} after {retries + 1} attempts: {str(e)}")
+                                # Return error results for all detections in this chunk
+                                return [{
+                                    "detection_id": d["id"],
+                                    "detection_type": d["type"],
+                                    "original_text": d["original_text"],
                                     "re_verify_result": {"error": str(e)},
-                                    "context_window": detection["context_window"]
-                                }
+                                    "chunk_id": chunk_id
+                                } for d in chunk_data["detections"]]
 
-            re_verify_tasks = [process_single_reverify(i, d) for i, d in enumerate(detections)]
+            re_verify_tasks = [process_batch_reverify(i, c) for i, c in enumerate(chunks_with_detections)]
             if re_verify_tasks:
-                re_verify_results = await asyncio.gather(*re_verify_tasks)
+                batch_results_list = await asyncio.gather(*re_verify_tasks)
+                # Flatten the list of lists
+                for batch in batch_results_list:
+                    re_verify_results.extend(batch)
         
         # Add re-verify results to the main result
         result["re_verify_results"] = re_verify_results
         result["re_verify_summary"] = {
-            "total_detections": len(detections) if 'detections' in locals() else 0,
+            "total_detections": sum(len(c["detections"]) for c in chunks_with_detections) if 'chunks_with_detections' in locals() else 0,
             "processed_detections": len(re_verify_results),
             "successful_re_verifies": sum(1 for r in re_verify_results if "error" not in r.get("re_verify_result", {}))
         }
         
         logger.info(f"Processing complete: {result['chunks_with_credit_card']}/{result['total_chunks']} chunks contain credit cards")
         logger.info(f"Re-Verify complete: {result['re_verify_summary']['successful_re_verifies']}/{result['re_verify_summary']['processed_detections']} detections processed")
+
+        # Process each chunk as a batch
+        # Masker process
+        if self.masker_action and result["re_verify_summary"]["processed_detections"] > 0:
+            logger.info("Starting Masker process for re-verified detections")
+            
+            # Prepare input for masker action
+            masker_input = {
+                "transcript": transcript_data.get("text", ""),
+                "re_verify_results": result["re_verify_results"]
+            }
+            
+            # Execute masker action
+            masker_result = await self.masker_action.execute(masker_input)
+            
+            # Add masker results to final result
+            result["masker_result"] = masker_result
+            result["original_transcript"] = transcript_data.get("text", "")
+            result["masked_transcript"] = masker_result.get("masked_transcript", "")
+            result["masker_summary"] = masker_result.get("masking_summary", {})
+            
+            logger.info(f"Masker process completed: {result['masker_summary'].get('total_detections_masked', 0)} detections masked")
+
         return result
     
     def _has_credit_card_data(self, workflow_result: Dict[str, Any]) -> bool:

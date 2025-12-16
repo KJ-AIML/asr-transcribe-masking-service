@@ -48,7 +48,6 @@ def setup_logging(
     # Fix Unicode encoding for Windows console
     if sys.platform == 'win32':
         # For Windows, we need to handle encoding differently
-        import io
         
         # Create a custom stream wrapper that handles UTF-8 properly
         class UnicodeStreamHandler:
