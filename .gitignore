@@ -21,3 +21,5 @@ examples/
 logs/
 
 asr_service_server.tar
+
+/models_cache/
