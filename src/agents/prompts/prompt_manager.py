@@ -21,6 +21,8 @@ class PromptManager:
         self._consistency_checker_batch: Optional[str] = None
         self._masker_batch: Optional[str] = None
         self._qa_auditor: Optional[str] = None
+        self._compare_chunk_wav_files: Optional[str] = None
+        self._choose_model_to_transcribe: Optional[str] = None
         
         # Subagent configurations
         self._subagent_configs = [
@@ -126,7 +128,24 @@ class PromptManager:
             self._missing_detection = self._load_prompt("agents/agent_missing_detection.md")
             logger.debug("Missing Detection prompt loaded")
         return self._missing_detection
+
+    @property
+    def compare_chunk_wav_files(self) -> str:
+        """Lazy load Compare Chunk Wav Files prompt"""
+        if self._compare_chunk_wav_files is None:
+            self._compare_chunk_wav_files = self._load_prompt("agents/agent_compare_chunk_wav_files.md")
+            logger.debug("Compare Chunk Wav Files prompt loaded")
+        return self._compare_chunk_wav_files
     
+    @property
+    def choose_model_to_transcribe(self) -> str:
+        """Lazy load Choose Model to Transcribe prompt"""
+        if self._choose_model_to_transcribe is None:
+            self._choose_model_to_transcribe = self._load_prompt("agents/agent_choose_model_to_transcribe.md")
+            logger.debug("Choose Model to Transcribe prompt loaded")
+        return self._choose_model_to_transcribe
+
+
     def _load_subagents(self) -> Dict[str, Any]:
         """Load all subagent configurations"""
         subagents = []

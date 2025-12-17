@@ -1,3 +1,4 @@
+from email import message
 from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.types import Send
 
@@ -6,7 +7,9 @@ from src.agents.schemas.types import (
     WorkerState,
     ReVerifyState,
     MaskerBatchState,
-    QAAuditorState
+    QAAuditorState,
+    CompareChunkWavFilesState,
+    ChooseModelToTranscribeState,
 )
 from src.agents.agent_manager.agent_manager import AgentManager
 from src.agents.prompts.prompt_manager import PromptManager
@@ -589,3 +592,86 @@ async def llm_call_qa_auditor(state: QAAuditorState):
     return {"qa_auditor_results": [response.model_dump()]}
 
 
+async def llm_call_compare_chunk_wav_files(state: CompareChunkWavFilesState):
+    """Call LLM to compare chunk wav files"""
+    logger.info("=== Processing chunk wav files with CompareChunkWavFiles node ===")
+
+    if isinstance(state, dict):
+        chunk_wav_files = state.get("chunk_wav_files", {})
+    else:
+        chunk_wav_files = state.chunk_wav_files
+
+    if not chunk_wav_files or not chunk_wav_files.get("chunks"):
+        logger.warning("No chunk data provided for comparison")
+        return {"compare_chunk_wav_files_results": []}
+
+    chunks = chunk_wav_files["chunks"]
+    session_id = chunk_wav_files.get("session_id", "unknown")
+    
+    logger.info(f"Processing {len(chunks)} chunks for session {session_id}")
+    
+    comparison_results = []
+    
+    for chunk_key, chunk_data in chunks.items():
+        chunk_id = chunk_data.get("chunk_id")
+        logger.debug(f"Comparing chunk {chunk_id}")
+        
+        input_data = {
+            "chunk_id": chunk_id,
+            "chunk_info": chunk_data.get("chunk_info", {}),
+            "model_transcriptions": chunk_data.get("model_transcriptions", {}),
+            "audio_context": chunk_data.get("audio_context", "")
+        }
+        
+        messages = [
+            SystemMessage(content=prompt_manager.compare_chunk_wav_files),
+            HumanMessage(content=f"""
+            Please compare the following ASR transcriptions for chunk {chunk_id}:
+
+            {json.dumps(input_data, ensure_ascii=False, indent=2)}
+
+            Provide analysis in the specified JSON format.
+            """)
+        ]
+
+        try:
+            response = await agent_manager.compare_chunk_wav_files.ainvoke(messages)
+            comparison_results.append(response.model_dump())
+            
+        except Exception as e:
+            logger.error(f"Failed to compare chunk {chunk_id}: {e}")
+            # Add error result
+            comparison_results.append({
+                "chunk_id": chunk_id,
+                "status": "error",
+                "error": str(e),
+                "selected_model": "typhoon",  # fallback to baseline
+                "missing_items": [],
+                "recommendations": []
+            })
+    
+    logger.info(f"Completed comparison for {len(comparison_results)} chunks")
+    
+    return {"compare_chunk_wav_files_results": comparison_results}
+
+async def llm_call_choose_model_to_transcribe(state: ChooseModelToTranscribeState):
+    """Call LLM to choose model to transcript"""
+    logger.info("=== Processing choose model to transcript with ChooseModelToTranscript node ===")
+
+    if isinstance(state, dict):
+        pass
+        # chunk_wav_files = state.get("chunk_wav_files", [])
+
+    else:
+        chunk_wav_files = []
+
+    messages = [
+        SystemMessage(content=prompt_manager.choose_model_to_transcribe),
+        HumanMessage(content=f"""
+        pass
+        """)
+    ]
+
+    response = await agent_manager.choose_model_to_transcribe.ainvoke(messages)
+
+    return {"choose_model_to_transcribe_results": [response.model_dump()]}

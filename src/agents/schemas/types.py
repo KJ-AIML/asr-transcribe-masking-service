@@ -429,3 +429,23 @@ class OriginalTextRangeArgs(BaseModel):
     start_time: float
     end_time: float
     transcript_data: Optional[Dict[str, Any]] = None
+
+class CompareChunkWavFilesState(BaseModel):
+    """State for Compare Chunk Wav Files agent"""
+    chunk_wav_files: dict
+
+class CompareChunkWavFilesResult(BaseModel):
+    """Result from Compare Chunk Wav Files agent"""
+    reasoning: str = Field(..., description="Step-by-step analysis of the comparison")
+    status: Literal["PASS", "FAIL"] = Field(..., description="Comparison status")
+    errors_found: Optional[List[QAAuditorError]] = Field(default=[], description="List of errors found during comparison")
+
+class ChooseModelToTranscribeState(BaseModel):
+    """State for Choose Model to Transcribe agent"""
+    transcript: str
+
+class ChooseModelToTranscribeResult(BaseModel):
+    """Result from Choose Model to Transcribe agent"""
+    reasoning: str = Field(..., description="Step-by-step analysis of the model choice")
+    status: Literal["PASS", "FAIL"] = Field(..., description="Model choice status")
+    model_choice: Optional[str] = Field(default=None, description="Chosen model for transcription")
