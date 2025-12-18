@@ -154,3 +154,5 @@ examples/
 .env
 
 .venv/
+
+asr-service-api.tar

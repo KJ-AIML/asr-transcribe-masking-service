@@ -20,6 +20,6 @@ examples/
 # Logs
 logs/
 
-asr_service_server.tar
+asr-service-api.tar
 
 /models_cache/
