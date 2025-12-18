@@ -1,7 +1,7 @@
 import operator
 from typing import Annotated
 from pydantic import BaseModel, Field
-from typing_extensions import TypedDict, Literal, Optional, List, Dict, Any
+from typing_extensions import TypedDict, Literal, Optional, List, Dict, Any, NotRequired
 
 # Stage 
 class State(TypedDict):
@@ -429,3 +429,32 @@ class OriginalTextRangeArgs(BaseModel):
     start_time: float
     end_time: float
     transcript_data: Optional[Dict[str, Any]] = None
+
+class CompareChunkWavFilesState(TypedDict):
+    """State for Compare Chunk Wav Files agent"""
+    chunk_id: str
+    chunk_info: dict
+    model_transcriptions: dict
+    compare_chunk_wav_files_results: dict
+
+class CompareChunkWavFilesResult(BaseModel):
+    """Result from Compare Chunk Wav Files agent"""
+    reasoning: str = Field(..., description="Step-by-step analysis of the comparison")
+    typhoon_baseline: Dict[str, Any] = Field(..., description="Typhoon baseline analysis")
+    pathumma_vs_noise: Dict[str, Any] = Field(..., description="Pathumma vs Pathumma_noise comparison")
+    recommendations: List[str] = Field(..., description="Recommendations for model selection")
+
+class ChooseModelToTranscribeState(TypedDict):
+    """State for Choose Model to Transcribe agent"""
+    metrics: dict
+    missing_examples: list
+    row_summaries: list
+    analysis_timestamp: str
+    total_chunks_processed: int
+    summary_stats_text: str
+    choose_model_to_transcribe_results: dict
+
+class ChooseModelToTranscribeResult(BaseModel):
+    """Result from Choose Model to Transcribe agent"""
+    reasoning: str = Field(..., description="Comprehensive analysis in Thai explaining the decision-making process")
+    model_to_process: int = Field(..., description="Selected model: 0=typhoon, 1=pathumma, 2=pathumma_noise")

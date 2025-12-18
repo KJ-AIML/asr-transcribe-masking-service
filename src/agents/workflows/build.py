@@ -1,7 +1,14 @@
 from typing import Any
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import RetryPolicy
-from src.agents.schemas.types import State, ReVerifyState, MaskerBatchState, QAAuditorState
+from src.agents.schemas.types import (
+    State, 
+    ReVerifyState, 
+    MaskerBatchState, 
+    QAAuditorState, 
+    CompareChunkWavFilesState,
+    ChooseModelToTranscribeState
+)
 from src.agents.workflows.nodes import (
     llm_call_context_improver,
     llm_call_self_checker,
@@ -12,6 +19,8 @@ from src.agents.workflows.nodes import (
     llm_call_re_verify_batch,
     llm_call_masker_batch,
     llm_call_qa_auditor,
+    llm_call_compare_chunk_wav_files,
+    llm_call_choose_model_to_transcribe,
 )
 from src.config.logs_config import get_logger
 
@@ -174,6 +183,72 @@ def build_qa_auditor_workflow() -> Any:
     # Add edges to connect nodes
     builder.add_edge(START, "qa_auditor")
     builder.add_edge("qa_auditor", END) 
+    
+    # Compile the workflow
+    workflow = builder.compile()
+    
+    logger.info("Workflow compiled successfully")
+
+    return workflow
+
+def build_compare_chunk_wav_files_workflow() -> Any:
+    """
+    Build and compile the compare chunk wav files workflow graph.
+    
+    This function creates a StateGraph workflow that processes transcripts through
+    multiple stages including compare chunk wav files
+    
+    Returns:
+        Compiled workflow graph ready for execution
+        
+    Workflow Flow:
+        1. START -> compare_chunk_wav_files
+        2. compare_chunk_wav_files -> END    
+    """
+    logger.info("Building compare chunk wav files workflow...")
+    
+    # Build workflow
+    builder = StateGraph(CompareChunkWavFilesState)
+
+    # Add the nodes
+    builder.add_node("compare_chunk_wav_files", llm_call_compare_chunk_wav_files)
+    
+    # Add edges to connect nodes
+    builder.add_edge(START, "compare_chunk_wav_files")
+    builder.add_edge("compare_chunk_wav_files", END) 
+    
+    # Compile the workflow
+    workflow = builder.compile()
+    
+    logger.info("Workflow compiled successfully")
+
+    return workflow
+
+def build_choose_model_to_transcribe_workflow() -> Any:
+    """
+    Build and compile the choose model to transcribe workflow graph.
+    
+    This function creates a StateGraph workflow that processes transcripts through
+    multiple stages including choose model to transcribe
+    
+    Returns:
+        Compiled workflow graph ready for execution
+        
+    Workflow Flow:
+        1. START -> choose_model_to_transcribe
+        2. choose_model_to_transcribe -> END    
+    """
+    logger.info("Building choose model to transcribe workflow...")
+    
+    # Build workflow
+    builder = StateGraph(ChooseModelToTranscribeState)
+
+    # Add the nodes
+    builder.add_node("choose_model_to_transcribe", llm_call_choose_model_to_transcribe)
+    
+    # Add edges to connect nodes
+    builder.add_edge(START, "choose_model_to_transcribe")
+    builder.add_edge("choose_model_to_transcribe", END) 
     
     # Compile the workflow
     workflow = builder.compile()

@@ -13,7 +13,9 @@ from src.agents.schemas.types import (
     ReVerifyBatchResult,
     ConsistencyCheckerResultBatch,
     MaskerBatchResult,
-    QAAuditorResult
+    QAAuditorResult,
+    CompareChunkWavFilesResult,
+    ChooseModelToTranscribeResult,
 )
 from src.models.langchain_model_loader import LangchainModelLoader
 from src.config.logs_config import get_logger
@@ -45,6 +47,8 @@ class AgentManager:
             "masker_batch_agent": MaskerBatchResult,
             "missing_detection_agent": MissingDetectionResult,
             "qa_auditor": QAAuditorResult,
+            "compare_chunk_wav_files": CompareChunkWavFilesResult,
+            "choose_model_to_transcribe": ChooseModelToTranscribeResult,
         }
 
         self._agent_tools = {
@@ -60,6 +64,8 @@ class AgentManager:
             "masker_batch_agent": [],
             "missing_detection_agent": [],
             "qa_auditor": [get_context_extension, get_detections_in_range, get_original_text_range],
+            "compare_chunk_wav_files": [],
+            "choose_model_to_transcribe": [],
         }
 
     @property
@@ -170,16 +176,21 @@ class AgentManager:
     def missing_detection(self):
         """Get the Missing Detection agent"""
         return self.get_agent("missing_detection_agent")
-    
-    # @property
-    # def qa_auditor(self):
-    #     """Get the QA Auditor agent"""
-    #     return self.get_agent_with_tools("qa_auditor")
 
     @property
     def qa_auditor(self):
         """Get the QA Auditor agent"""
         return self.get_agent("qa_auditor")
+
+    @property
+    def compare_chunk_wav_files(self):
+        """Get the Compare Chunk Wav Files agent"""
+        return self.get_agent("compare_chunk_wav_files")
+
+    @property
+    def choose_model_to_transcribe(self):
+        """Get the Choose Model to Transcribe agent"""
+        return self.get_agent("choose_model_to_transcribe")
 
     def list_available_agents(self) -> list:
         """List all available agent names"""

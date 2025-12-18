@@ -1,6 +1,5 @@
 from langchain.chat_models import init_chat_model
 from langchain_openai import ChatOpenAI
-from langchain_ollama import ChatOllama
 from typing import Optional, Dict, Any
 import os
 
@@ -66,35 +65,29 @@ class LangchainModelLoader:
 
     def init_chat_model_inference_server(self, temperature: float = 0.0, **kwargs) -> Any:
         config = {"temperature": temperature}
+        api_key = None
         if "api_key" in kwargs:
-            config["api_key"] = kwargs["api_key"]
+            api_key = kwargs["api_key"]
         elif settings.INFERENCE_SERVER_API_KEY:
-            config["api_key"] = settings.INFERENCE_SERVER_API_KEY
+            api_key = settings.INFERENCE_SERVER_API_KEY
         config.update({k: v for k, v in kwargs.items() if k != "temperature"})
         
-        model = ChatOpenAI(
-            model=settings.INFERENCE_SERVER_MODEL_BASIC,
-            temperature=temperature,
-            top_p=kwargs.get("top_p", 0.90),
-            openai_api_key=config["api_key"],
-            openai_api_base=settings.INFERENCE_SERVER_URL,
-            max_retries=0,
-            timeout=180
-        )
+        # Build ChatOpenAI parameters conditionally
+        chat_params = {
+            "model": settings.INFERENCE_SERVER_MODEL_BASIC,
+            "temperature": temperature,
+            "top_p": kwargs.get("top_p", 0.90),
+            "openai_api_base": settings.INFERENCE_SERVER_URL,
+            "max_retries": 0,
+            "timeout": 180
+        }
+        
+        # Only add openai_api_key if it exists
+        if api_key:
+            chat_params["openai_api_key"] = api_key
+        
+        model = ChatOpenAI(**chat_params)
         self.models["inference_server"] = model
-        return model
-
-    def init_chat_model_inference_private_server(self, temperature: float = 0.0, **kwargs) -> Any:
-        config = {"temperature": temperature}
-        config.update({k: v for k, v in kwargs.items() if k != "temperature"})
-        
-        model = ChatOllama(
-            model=settings.INFERENCE_PRIVATE_SERVER_MODEL_BASIC,
-            temperature=temperature,
-            top_p=kwargs.get("top_p", 0.90),
-            openai_api_base=settings.INFERENCE_PRIVATE_SERVER_URL,
-        )
-        self.models["inference_private_server"] = model
         return model
 
     def get_model(self, model_name: str) -> Optional[Any]:
