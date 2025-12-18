@@ -73,7 +73,7 @@ class AgentManager:
         """Lazy load the model"""
         if self._model is None:
             try:
-                self._model = self.model_loader.init_model_deepseek_basic(temperature=0.2)
+                self._model = self.model_loader.init_chat_model_inference_server(temperature=0.2)
                 logger.info("Model initialized successfully")
             except Exception as e:
                 logger.error(f"Failed to initialize model: {e}")
