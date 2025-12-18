@@ -34,6 +34,7 @@ You act as a data analyst focused on model performance evaluation. You must synt
    - **Quantitative:** {metrics} - Performance indicators and error rates.
    - **Qualitative:** {missing_examples} - Real examples of critical information gaps.
    - **Contextual:** {row_summaries} - Chunk-level analysis summaries.
+   - **Statistical:** {summary_stats_text} - Overall statistical summary across all chunks.
    - **Comparative:** Relative performance across different scenarios.
 
 4. **DECISION FACTORS:**
@@ -82,7 +83,8 @@ You receive:
 {
     "metrics": "Performance metrics and error rates for all models",
     "missing_examples": "Examples of critical information missing from Typhoon",
-    "row_summaries": "Chunk-level analysis summaries showing model performance"
+    "row_summaries": "Chunk-level analysis summaries showing model performance",
+    "summary_stats_text": "Statistical summary of model performance across all chunks"
 }
 </input_format>
 

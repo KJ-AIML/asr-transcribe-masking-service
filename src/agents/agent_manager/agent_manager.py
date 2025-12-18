@@ -64,6 +64,8 @@ class AgentManager:
             "masker_batch_agent": [],
             "missing_detection_agent": [],
             "qa_auditor": [get_context_extension, get_detections_in_range, get_original_text_range],
+            "compare_chunk_wav_files": [],
+            "choose_model_to_transcribe": [],
         }
 
     @property
@@ -71,7 +73,7 @@ class AgentManager:
         """Lazy load the model"""
         if self._model is None:
             try:
-                self._model = self.model_loader.init_chat_model_inference_server(temperature=0.2)
+                self._model = self.model_loader.init_model_deepseek_basic(temperature=0.2)
                 logger.info("Model initialized successfully")
             except Exception as e:
                 logger.error(f"Failed to initialize model: {e}")
@@ -183,12 +185,12 @@ class AgentManager:
     @property
     def compare_chunk_wav_files(self):
         """Get the Compare Chunk Wav Files agent"""
-        return self.get_agent("compare_chunk_wav_files_agent")
+        return self.get_agent("compare_chunk_wav_files")
 
     @property
     def choose_model_to_transcribe(self):
         """Get the Choose Model to Transcribe agent"""
-        return self.get_agent("choose_model_to_transcribe_agent")
+        return self.get_agent("choose_model_to_transcribe")
 
     def list_available_agents(self) -> list:
         """List all available agent names"""

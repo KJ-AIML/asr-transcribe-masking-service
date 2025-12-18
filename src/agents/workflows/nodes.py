@@ -596,82 +596,113 @@ async def llm_call_compare_chunk_wav_files(state: CompareChunkWavFilesState):
     """Call LLM to compare chunk wav files"""
     logger.info("=== Processing chunk wav files with CompareChunkWavFiles node ===")
 
+    # Extract data from state with proper type checking
     if isinstance(state, dict):
-        chunk_wav_files = state.get("chunk_wav_files", {})
+        chunk_id = state.get("chunk_id", "unknown")
+        chunk_info = state.get("chunk_info", {})
+        model_transcriptions = state.get("model_transcriptions", {})
     else:
-        chunk_wav_files = state.chunk_wav_files
+        chunk_id = getattr(state, "chunk_id", "unknown") if hasattr(state, "chunk_id") else "unknown"
+        chunk_info = getattr(state, "chunk_info", {}) if hasattr(state, "chunk_info") else {}
+        model_transcriptions = getattr(state, "model_transcriptions", {}) if hasattr(state, "model_transcriptions") else {}
 
-    if not chunk_wav_files or not chunk_wav_files.get("chunks"):
-        logger.warning("No chunk data provided for comparison")
-        return {"compare_chunk_wav_files_results": []}
-
-    chunks = chunk_wav_files["chunks"]
-    session_id = chunk_wav_files.get("session_id", "unknown")
+    logger.debug(f"Comparing chunk {chunk_id}")
     
-    logger.info(f"Processing {len(chunks)} chunks for session {session_id}")
+    # Format transcriptions for LLM
+    typhoon_text = model_transcriptions.get("typhoon", {}).get("text", "")
+    pathumma_text = model_transcriptions.get("pathumma", {}).get("text", "")
+    pathumma_noise_text = model_transcriptions.get("pathumma_noise", {}).get("text", "")
     
-    comparison_results = []
+    # Format chunk info
+    start_time = chunk_info.get("start_time", 0)
+    end_time = chunk_info.get("end_time", 0)
+    duration = chunk_info.get("duration", 0)
     
-    for chunk_key, chunk_data in chunks.items():
-        chunk_id = chunk_data.get("chunk_id")
-        logger.debug(f"Comparing chunk {chunk_id}")
-        
-        input_data = {
-            "chunk_id": chunk_id,
-            "chunk_info": chunk_data.get("chunk_info", {}),
-            "model_transcriptions": chunk_data.get("model_transcriptions", {}),
-            "audio_context": chunk_data.get("audio_context", "")
-        }
-        
-        messages = [
-            SystemMessage(content=prompt_manager.compare_chunk_wav_files),
-            HumanMessage(content=f"""
+    messages = [
+        SystemMessage(content=prompt_manager.compare_chunk_wav_files),
+        HumanMessage(content=f"""
             Please compare the following ASR transcriptions for chunk {chunk_id}:
-
-            {json.dumps(input_data, ensure_ascii=False, indent=2)}
-
-            Provide analysis in the specified JSON format.
-            """)
-        ]
-
-        try:
-            response = await agent_manager.compare_chunk_wav_files.ainvoke(messages)
-            comparison_results.append(response.model_dump())
             
-        except Exception as e:
-            logger.error(f"Failed to compare chunk {chunk_id}: {e}")
-            # Add error result
-            comparison_results.append({
-                "chunk_id": chunk_id,
-                "status": "error",
-                "error": str(e),
-                "selected_model": "typhoon",  # fallback to baseline
-                "missing_items": [],
-                "recommendations": []
-            })
+            ### Chunk Information:
+            - Chunk ID: {chunk_id}
+            - Start Time: {start_time:.2f}s
+            - End Time: {end_time:.2f}s
+            - Duration: {duration:.2f}s
+            
+            ### Model Transcriptions:
+            - Typhoon: "{typhoon_text}"
+            - Pathumma: "{pathumma_text}"
+            - Pathumma Noise: "{pathumma_noise_text}"
+            
+            Please analyze and provide comparison in the specified JSON format.
+            """)
+    ]
+
+    response = await agent_manager.compare_chunk_wav_files.ainvoke(messages)
+
+    logger.debug(f"Chunk {chunk_id} comparison completed")
     
-    logger.info(f"Completed comparison for {len(comparison_results)} chunks")
-    
-    return {"compare_chunk_wav_files_results": comparison_results}
+    return {"compare_chunk_wav_files_results": [response.model_dump()]}
+        
 
 async def llm_call_choose_model_to_transcribe(state: ChooseModelToTranscribeState):
     """Call LLM to choose model to transcript"""
     logger.info("=== Processing choose model to transcript with ChooseModelToTranscript node ===")
 
+    # Extract data from state with proper type checking
     if isinstance(state, dict):
-        pass
-        # chunk_wav_files = state.get("chunk_wav_files", [])
-
+        metrics = state.get("metrics", {})
+        missing_examples = state.get("missing_examples", [])
+        row_summaries = state.get("row_summaries", [])
+        total_chunks_processed = state.get("total_chunks_processed", 0)
+        analysis_timestamp = state.get("analysis_timestamp", "")
+        summary_stats_text = state.get("summary_stats_text", "")
     else:
-        chunk_wav_files = []
+        metrics = getattr(state, "metrics", {}) if hasattr(state, "metrics") else {}
+        missing_examples = getattr(state, "missing_examples", []) if hasattr(state, "missing_examples") else []
+        row_summaries = getattr(state, "row_summaries", []) if hasattr(state, "row_summaries") else []
+        total_chunks_processed = getattr(state, "total_chunks_processed", 0) if hasattr(state, "total_chunks_processed") else 0
+        analysis_timestamp = getattr(state, "analysis_timestamp", "") if hasattr(state, "analysis_timestamp") else ""
+        summary_stats_text = getattr(state, "summary_stats_text", "") if hasattr(state, "summary_stats_text") else ""
 
+    logger.debug(f"Choosing model from {total_chunks_processed} processed chunks")
+    
     messages = [
         SystemMessage(content=prompt_manager.choose_model_to_transcribe),
         HumanMessage(content=f"""
-        pass
+        Please analyze the following ASR model performance data and choose the best model:
+        
+        ### Performance Metrics:
+        {metrics}
+        
+        ### Missing Examples:
+        {missing_examples}
+        
+        ### Row Summaries:
+        {row_summaries}
+        
+        ### Analysis Summary:
+        {summary_stats_text}
+        
+        ### Analysis Info:
+        - Total Chunks Processed: {total_chunks_processed}
+        - Analysis Timestamp: {analysis_timestamp}
+        
+        Please provide analysis and recommendation in the specified JSON format.
         """)
     ]
 
+    logger.info(f"=== BEFORE LLM INVOKE: Choose Model ===")
+    logger.info(f"State type: {type(state)}")
+    logger.info(f"State keys: {list(state.keys()) if isinstance(state, dict) else 'Not a dict'}")
+    logger.info(f"Metrics: {metrics}")
+    logger.info(f"Total chunks processed: {total_chunks_processed}")
+    logger.info(f"Missing examples count: {len(missing_examples)}")
+    logger.info(f"Row summaries count: {len(row_summaries)}")
+    logger.info(f"Summary stats text length: {len(summary_stats_text)}")
+
     response = await agent_manager.choose_model_to_transcribe.ainvoke(messages)
 
+    logger.debug("Model selection completed")
+    
     return {"choose_model_to_transcribe_results": [response.model_dump()]}
