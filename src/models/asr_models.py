@@ -110,7 +110,7 @@ class PathummaASR(ASRModelBase):
             self._model = pipeline(
                 task="automatic-speech-recognition",
                 model=self.model_name,
-                return_timestamps=False,
+                return_timestamps="word",
                 torch_dtype=self.torch_dtype,
                 device=self.device,
             )
@@ -132,19 +132,70 @@ class PathummaASR(ASRModelBase):
             self._load_model()
             
         try:
-            # TODO: Convert bytes to temp file or use memory approach
-            # For now, assume we can process bytes directly
-            out = self._model(audio_data)
+            # Convert bytes to temporary file for processing
+            import tempfile
+            import os
             
-            if isinstance(out, dict) and "text" in out:
-                text = out["text"]
-            else:
-                text = str(out)
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
+                temp_file.write(audio_data)
+                temp_file_path = temp_file.name
+            
+            try:
+                # Transcribe using temp file path
+                out = self._model(temp_file_path)
                 
-            return {"text": text, "error": None}
+                # Extract text and word-level timestamps
+                if isinstance(out, dict):
+                    text = out.get("text", "")
+                    
+                    # Extract word-level timestamps if available
+                    words = []
+                    chunks = out.get("chunks", [])
+                    
+                    for chunk in chunks:
+                        if isinstance(chunk, dict):
+                            chunk_text = chunk.get("text", "")
+                            timestamp = chunk.get("timestamp", None)
+                            
+                            if timestamp and len(timestamp) == 2:
+                                start_time = timestamp[0] if timestamp[0] is not None else 0.0
+                                end_time = timestamp[1] if timestamp[1] is not None else start_time + 0.5
+                                
+                                # Split chunk text into words (simple approach)
+                                words_in_chunk = chunk_text.strip().split()
+                                if words_in_chunk:
+                                    # Distribute timestamps across words
+                                    word_duration = (end_time - start_time) / len(words_in_chunk)
+                                    for i, word in enumerate(words_in_chunk):
+                                        word_start = start_time + (i * word_duration)
+                                        word_end = word_start + word_duration
+                                        words.append({
+                                            "word": word,
+                                            "start": word_start,
+                                            "end": word_end,
+                                            "confidence": 0.95
+                                        })
+                    
+                    return {
+                        "text": text,
+                        "words": words,
+                        "error": None
+                    }
+                else:
+                    # Fallback for non-dict results
+                    text = str(out)
+                    return {"text": text, "words": [], "error": None}
+                    
+            finally:
+                # Clean up temp file
+                try:
+                    os.unlink(temp_file_path)
+                except Exception as cleanup_error:
+                    logger.warning(f"Failed to clean up temp file {temp_file_path}: {cleanup_error}")
+                    
         except Exception as e:
             logger.error(f"Pathumma transcription error: {e}")
-            return {"text": "", "error": str(e)}
+            return {"text": "", "words": [], "error": str(e)}
 
 class PathummaNoiseASR(PathummaASR):
     """Pathumma Whisper with Noise Finetuning"""

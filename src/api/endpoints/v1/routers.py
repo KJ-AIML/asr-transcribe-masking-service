@@ -8,6 +8,7 @@ from src.api.endpoints.v1 import (
     process_qa_auditor,
     process_wav2file,
     process_wav_file,
+    process_unified_stereo,
 )
 
 # Create v1 router
@@ -23,4 +24,7 @@ v1_router.include_router(process_wav_file.router, prefix="/process_wav_file")
 v1_router.include_router(process_wav2file.router, prefix="/process_wav2file")
 v1_router.include_router(
     process_file2choose_model.router, prefix="/process_file2choose_model"
+)
+v1_router.include_router(
+    process_unified_stereo.router, prefix="/process_unified_stereo"
 )
