@@ -1,38 +1,41 @@
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
+
 from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy
+
 from src.agents.schemas.types import (
-    Agent1Output, 
-    SelfCheckerResult, 
-    ChunkAnalysis, 
-    PIIWorkerOutput,
+    Agent1Output,
     AgentPaymentOutput,
-    ReVerifyResult,
+    ChooseModelToTranscribeResult,
+    ChunkAnalysis,
+    CompareChunkWavFilesResult,
     ConsistencyCheckerResult,
-    MissingDetectionResult,
-    ReVerifyBatchResult,
     ConsistencyCheckerResultBatch,
     MaskerBatchResult,
+    MissingDetectionResult,
+    PIIWorkerOutput,
     QAAuditorResult,
-    CompareChunkWavFilesResult,
-    ChooseModelToTranscribeResult,
+    ReVerifyBatchResult,
+    ReVerifyResult,
+    SelfCheckerResult,
 )
-from src.models.langchain_model_loader import LangchainModelLoader
-from src.config.logs_config import get_logger
 from src.agents.tools.tools import (
     get_context_extension,
     get_detections_in_range,
-    get_original_text_range
+    get_original_text_range,
 )
+from src.config.logs_config import get_logger
+from src.models.langchain_model_loader import LangchainModelLoader
 
 logger = get_logger(__name__)
+
 
 class AgentManager:
     def __init__(self, model_loader: Optional[LangchainModelLoader] = None):
         self.model_loader = model_loader or LangchainModelLoader()
         self._model = None
         self._agents: Dict[str, Any] = {}
-        
+
         # Agent names for lazy loading
         self._agent_names = {
             "context_improver": Agent1Output,
@@ -63,7 +66,11 @@ class AgentManager:
             "consistency_checker_batch": [],
             "masker_batch_agent": [],
             "missing_detection_agent": [],
-            "qa_auditor": [get_context_extension, get_detections_in_range, get_original_text_range],
+            "qa_auditor": [
+                get_context_extension,
+                get_detections_in_range,
+                get_original_text_range,
+            ],
             "compare_chunk_wav_files": [],
             "choose_model_to_transcribe": [],
         }
@@ -73,7 +80,9 @@ class AgentManager:
         """Lazy load the model"""
         if self._model is None:
             try:
-                self._model = self.model_loader.init_chat_model_inference_server(temperature=0.2)
+                self._model = self.model_loader.init_chat_model_inference_server(
+                    temperature=0.2
+                )
                 logger.info("Model initialized successfully")
             except Exception as e:
                 logger.error(f"Failed to initialize model: {e}")
@@ -90,7 +99,9 @@ class AgentManager:
         if name not in self._agents:
             if name in self._agent_names:
                 try:
-                    self._agents[name] = self.model.with_structured_output(self._agent_names[name])
+                    self._agents[name] = self.model.with_structured_output(
+                        self._agent_names[name]
+                    )
                     logger.debug(f"Agent '{name}' created and cached")
                 except Exception as e:
                     logger.error(f"Failed to create agent '{name}': {e}")
@@ -98,7 +109,7 @@ class AgentManager:
             else:
                 logger.warning(f"Unknown agent name: {name}")
                 return None
-        
+
         return self._agents.get(name)
 
     def get_agent_with_tools(self, name: str) -> Optional[Any]:
@@ -109,7 +120,9 @@ class AgentManager:
                     self._agents[name] = create_agent(
                         model=self.model,
                         tools=self._agent_tools[name],
-                        response_format=ToolStrategy(self._agent_names[name], handle_errors=True),
+                        response_format=ToolStrategy(
+                            self._agent_names[name], handle_errors=True
+                        ),
                     )
                     logger.debug(f"Agent '{name}' created and cached")
                 except Exception as e:
@@ -118,7 +131,7 @@ class AgentManager:
             else:
                 logger.warning(f"Unknown agent name: {name}")
                 return None
-        
+
         return self._agents.get(name)
 
     # Convenience properties for commonly used agents
@@ -141,7 +154,7 @@ class AgentManager:
     def pii_sub_agent_worker(self):
         """Get the PII sub agent worker"""
         return self.get_agent("pii_sub_agent_worker")
-    
+
     @property
     def agent_payment(self):
         """Get the Agent Payment worker"""
