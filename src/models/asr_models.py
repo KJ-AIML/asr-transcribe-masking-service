@@ -30,9 +30,13 @@ class TyphoonASR(ASRModelBase):
     def __init__(self):
         super().__init__("typhoon")
         self._transcribe_fn = None
+        self._model_loaded = False
         
     def _load_model(self):
         """Load Typhoon model"""
+        if self._model_loaded:
+            return
+            
         try:
             # Fix for Windows signal.SIGKILL issue
             import signal
@@ -41,14 +45,17 @@ class TyphoonASR(ASRModelBase):
             
             from typhoon_asr import transcribe
             self._transcribe_fn = transcribe
+            self._model_loaded = True
             logger.info("Typhoon ASR model loaded")
         except ImportError as e:
             logger.error(f"Failed to import typhoon_asr: {e}")
             self._transcribe_fn = None
+            self._model_loaded = False
             raise
         except Exception as e:
             logger.error(f"Error loading Typhoon model: {e}")
             self._transcribe_fn = None
+            self._model_loaded = False
             raise
             
     async def transcribe(self, audio_data: bytes) -> Dict[str, Any]:
@@ -95,6 +102,34 @@ class TyphoonASR(ASRModelBase):
         except Exception as e:
             logger.error(f"Typhoon transcription error: {e}")
             return {"text": "", "error": str(e)}
+    
+    def unload_model(self):
+        """Unload Typhoon model from memory"""
+        try:
+            self._transcribe_fn = None
+            self._model_loaded = False
+            
+            # Clear typhoon_asr module cache if possible
+            import sys
+            modules_to_remove = [mod for mod in sys.modules.keys() if 'typhoon_asr' in mod]
+            for mod in modules_to_remove:
+                if mod in sys.modules:
+                    del sys.modules[mod]
+            
+            # Clear GPU cache if available
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                logger.debug("Typhoon model: CUDA cache cleared")
+            
+            logger.info("Typhoon ASR model unloaded from memory")
+            
+        except Exception as e:
+            logger.warning(f"Failed to unload Typhoon model: {e}")
+    
+    def is_loaded(self) -> bool:
+        """Check if model is loaded"""
+        return self._model_loaded and self._transcribe_fn is not None
 
 class PathummaASR(ASRModelBase):
     """Pathumma Whisper Model"""
@@ -103,9 +138,13 @@ class PathummaASR(ASRModelBase):
         super().__init__(model_name)
         self.lang = "th"
         self.task = "transcribe"
+        self._model_loaded = False
         
     def _load_model(self):
         """Load Pathumma Whisper model"""
+        if self._model_loaded and self._model is not None:
+            return
+            
         try:
             self._model = pipeline(
                 task="automatic-speech-recognition",
@@ -121,9 +160,11 @@ class PathummaASR(ASRModelBase):
                 task=self.task,
             )
             
+            self._model_loaded = True
             logger.info(f"Pathumma ASR model loaded: {self.model_name}")
         except Exception as e:
             logger.error(f"Failed to load Pathumma model: {e}")
+            self._model_loaded = False
             raise
             
     async def transcribe(self, audio_data: bytes) -> Dict[str, Any]:
@@ -196,6 +237,44 @@ class PathummaASR(ASRModelBase):
         except Exception as e:
             logger.error(f"Pathumma transcription error: {e}")
             return {"text": "", "words": [], "error": str(e)}
+    
+    def unload_model(self):
+        """Unload Pathumma Whisper model from memory"""
+        try:
+            if self._model is not None:
+                # Move model to CPU first to free VRAM
+                self._model.model.cpu()
+                self._model.device = "cpu"
+                
+                # Clear pipeline
+                del self._model
+                self._model = None
+            
+            self._model_loaded = False
+            
+            # Aggressive GPU memory cleanup
+            import torch
+            if torch.cuda.is_available():
+                # Clear CUDA cache
+                torch.cuda.empty_cache()
+                
+                # Reset memory stats
+                torch.cuda.reset_peak_memory_stats()
+                
+                # Force garbage collection
+                import gc
+                gc.collect()
+                
+                logger.debug(f"Pathumma model: VRAM freed. Current VRAM: {torch.cuda.memory_allocated() / 1024**3:.2f}GB")
+            
+            logger.info("Pathumma Whisper model unloaded from memory")
+            
+        except Exception as e:
+            logger.warning(f"Failed to unload Pathumma model: {e}")
+    
+    def is_loaded(self) -> bool:
+        """Check if model is loaded"""
+        return self._model_loaded and self._model is not None
 
 class PathummaNoiseASR(PathummaASR):
     """Pathumma Whisper with Noise Finetuning"""
@@ -228,53 +307,69 @@ class ASRModelManager:
             try:
                 result = await model.transcribe(audio_data)
                 results[model_name] = result
+                
+                # Aggressive memory cleanup after each model transcription
+                self.clear_cache()
+                
+                # Force garbage collection
+                import gc
+                gc.collect()
             except Exception as e:
                 logger.error(f"Error with {model_name}: {e}")
                 results[model_name] = {"text": "", "error": str(e)}
                 
         return results
     
-    async def transcribe_batch(self, audio_batch: List[bytes], model_names: List[str] = None) -> List[Dict[str, Any]]:
+    async def transcribe_batch(self, audio_batch: List[bytes], model_names: List[str] = None, auto_unload: bool = True) -> List[Dict[str, Any]]:
         """Transcribe a batch of audio chunks with specified models"""
         if model_names is None:
             model_names = ["typhoon", "pathumma", "pathumma_noise"]
         
         batch_results = []
         
-        for i, audio_data in enumerate(audio_batch):
-            chunk_result = {
-                "chunk_index": i,
-                "transcriptions": {},
-                "processing_times_ms": {}
-            }
-            
-            # Transcribe with each model
-            for model_name in model_names:
-                if model_name not in self.models:
-                    logger.warning(f"Model {model_name} not available")
-                    continue
+        try:
+            for i, audio_data in enumerate(audio_batch):
+                chunk_result = {
+                    "chunk_index": i,
+                    "transcriptions": {},
+                    "processing_times_ms": {}
+                }
                 
-                start_time = time.time()
-                try:
-                    result = await self.models[model_name].transcribe(audio_data)
-                    processing_time = (time.time() - start_time) * 1000
+                # Transcribe with each model
+                for model_name in model_names:
+                    if model_name not in self.models:
+                        logger.warning(f"Model {model_name} not available")
+                        continue
                     
-                    chunk_result["transcriptions"][model_name] = result
-                    chunk_result["processing_times_ms"][model_name] = processing_time
-                    
-                    logger.debug(f"Chunk {i} - {model_name}: {processing_time:.1f}ms")
-                    
-                except Exception as e:
-                    processing_time = (time.time() - start_time) * 1000
-                    logger.error(f"Error transcribing chunk {i} with {model_name}: {e}")
-                    chunk_result["transcriptions"][model_name] = {"text": "", "error": str(e)}
-                    chunk_result["processing_times_ms"][model_name] = processing_time
-            
-            batch_results.append(chunk_result)
-            
-            # Clear cache between chunks to manage memory
-            if i % 3 == 0:  # Every 3 chunks
+                    start_time = time.time()
+                    try:
+                        result = await self.models[model_name].transcribe(audio_data)
+                        processing_time = (time.time() - start_time) * 1000
+                        
+                        chunk_result["transcriptions"][model_name] = result
+                        chunk_result["processing_times_ms"][model_name] = processing_time
+                        
+                        logger.debug(f"Chunk {i} - {model_name}: {processing_time:.1f}ms")
+                        
+                    except Exception as e:
+                        processing_time = (time.time() - start_time) * 1000
+                        logger.error(f"Error transcribing chunk {i} with {model_name}: {e}")
+                        chunk_result["transcriptions"][model_name] = {"text": "", "error": str(e)}
+                        chunk_result["processing_times_ms"][model_name] = processing_time
+                
+                batch_results.append(chunk_result)
+                
+                # Aggressive memory management - clean up every chunk for VRAM optimization
                 self.clear_cache()
+                
+                # Optional: Unload models temporarily if memory is critical
+                if auto_unload and i % 2 == 1:  # Every 2 chunks
+                    self.temporarily_unload_models(model_names)
+        
+        finally:
+            # Ensure models are reloaded after batch processing
+            if auto_unload:
+                self.reload_models_if_needed(model_names)
         
         return batch_results
     
@@ -358,31 +453,92 @@ class ASRModelManager:
         """Get specific model by name"""
         return self.models.get(model_name)
     
-    def clear_cache(self):
-        """Clear model caches and free memory"""
+    def clear_cache(self, aggressive: bool = False):
+        """Clear model caches and free memory
+        
+        Args:
+            aggressive: If True, performs more aggressive cache clearing including model unloading
+        """
         try:
             # Clear CUDA cache if available
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-                logger.debug("CUDA cache cleared")
+                if aggressive:
+                    torch.cuda.reset_peak_memory_stats()
+                    # Force synchronization
+                    torch.cuda.synchronize()
+                logger.debug("CUDA cache cleared" + (" (aggressive)" if aggressive else ""))
             
             # Clear model caches if they have cache clearing methods
             for model_name, model in self.models.items():
                 if hasattr(model, '_model') and model._model is not None:
-                    # Some transformers models have cache
+                    # Clear transformers model cache
                     if hasattr(model._model, 'cache'):
                         model._model.cache.clear()
+                    
+                    # Clear generation cache if available
+                    if hasattr(model._model, 'model') and hasattr(model._model.model, 'past_key_values'):
+                        model._model.model.past_key_values = None
+                    
+                    # For aggressive mode, temporarily unload models to free more memory
+                    if aggressive and hasattr(model, 'unload_model'):
+                        model.unload_model()
+                        logger.debug(f"Aggressive cache clear: unloaded {model_name}")
                         
-            logger.debug("ASR model caches cleared")
+            # Force garbage collection
+            import gc
+            gc.collect()
+            
+            logger.debug(f"ASR model caches cleared" + (" (aggressive mode)" if aggressive else ""))
             
         except Exception as e:
             logger.warning(f"Failed to clear ASR model caches: {e}")
+    
+    def temporarily_unload_models(self, model_names: List[str] = None):
+        """Temporarily unload models to free VRAM during processing"""
+        if model_names is None:
+            model_names = ["typhoon", "pathumma", "pathumma_noise"]
+            
+        try:
+            for model_name in model_names:
+                if model_name in self.models and hasattr(self.models[model_name], 'unload_model'):
+                    self.models[model_name].unload_model()
+                    logger.debug(f"Temporarily unloaded model: {model_name}")
+            
+            # Force garbage collection
+            import gc
+            gc.collect()
+            
+            # Clear VRAM
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                logger.debug(f"VRAM after temporary unload: {torch.cuda.memory_allocated() / 1024**3:.2f}GB")
+                
+        except Exception as e:
+            logger.warning(f"Failed to temporarily unload models: {e}")
+    
+    def reload_models_if_needed(self, model_names: List[str] = None):
+        """Reload models if they were temporarily unloaded"""
+        if model_names is None:
+            model_names = ["typhoon", "pathumma", "pathumma_noise"]
+            
+        try:
+            for model_name in model_names:
+                if model_name in self.models and hasattr(self.models[model_name], 'is_loaded'):
+                    if not self.models[model_name].is_loaded():
+                        self.models[model_name]._load_model()
+                        logger.debug(f"Reloaded model: {model_name}")
+                        
+        except Exception as e:
+            logger.warning(f"Failed to reload models: {e}")
     
     def unload_models(self):
         """Unload all models to free memory"""
         try:
             for model_name, model in self.models.items():
-                if hasattr(model, '_model') and model._model is not None:
+                if hasattr(model, 'unload_model'):
+                    model.unload_model()
+                elif hasattr(model, '_model') and model._model is not None:
                     del model._model
                     model._model = None
                     logger.debug(f"Unloaded model: {model_name}")
@@ -390,6 +546,7 @@ class ASRModelManager:
             # Clear CUDA cache if available
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+                torch.cuda.reset_peak_memory_stats()
                 
             logger.info("All ASR models unloaded from memory")
             
@@ -405,3 +562,62 @@ class ASRModelManager:
         except Exception as e:
             logger.error(f"Failed to reload ASR models: {e}")
             raise
+    
+    def get_memory_usage(self) -> Dict[str, Any]:
+        """Get current memory usage statistics"""
+        memory_info = {
+            "models_loaded": {},
+            "gpu_memory": {}
+        }
+        
+        try:
+            # Check model loading status
+            for model_name, model in self.models.items():
+                if hasattr(model, 'is_loaded'):
+                    memory_info["models_loaded"][model_name] = model.is_loaded()
+                else:
+                    memory_info["models_loaded"][model_name] = hasattr(model, '_model') and model._model is not None
+            
+            # GPU memory info
+            import torch
+            if torch.cuda.is_available():
+                memory_info["gpu_memory"] = {
+                    "allocated_gb": torch.cuda.memory_allocated() / 1024**3,
+                    "reserved_gb": torch.cuda.memory_reserved() / 1024**3,
+                    "max_allocated_gb": torch.cuda.max_memory_allocated() / 1024**3,
+                    "device_count": torch.cuda.device_count(),
+                    "device_name": torch.cuda.get_device_name(0) if torch.cuda.device_count() > 0 else "No GPU"
+                }
+            else:
+                memory_info["gpu_memory"] = {"message": "CUDA not available"}
+            
+            # System memory info
+            import psutil
+            memory_info["system_memory"] = {
+                "used_gb": psutil.virtual_memory().used / 1024**3,
+                "available_gb": psutil.virtual_memory().available / 1024**3,
+                "percent_used": psutil.virtual_memory().percent
+            }
+            
+        except Exception as e:
+            logger.warning(f"Failed to get memory usage: {e}")
+            memory_info["error"] = str(e)
+        
+        return memory_info
+    
+    def log_memory_usage(self, context: str = ""):
+        """Log current memory usage"""
+        memory_info = self.get_memory_usage()
+        
+        logger.info(f"Memory Usage {context}:")
+        for model_name, loaded in memory_info["models_loaded"].items():
+            status = "LOADED" if loaded else "UNLOADED"
+            logger.info(f"  {model_name}: {status}")
+        
+        if "allocated_gb" in memory_info["gpu_memory"]:
+            gpu_mem = memory_info["gpu_memory"]
+            logger.info(f"  GPU VRAM: {gpu_mem['allocated_gb']:.2f}GB allocated, {gpu_mem['reserved_gb']:.2f}GB reserved")
+            
+        if "used_gb" in memory_info.get("system_memory", {}):
+            sys_mem = memory_info["system_memory"]
+            logger.info(f"  System RAM: {sys_mem['used_gb']:.2f}GB used ({sys_mem['percent_used']:.1f}%)")
