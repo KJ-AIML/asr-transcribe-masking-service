@@ -2,6 +2,7 @@ from typing import Dict, Any, Optional, List
 import torch
 import time
 import asyncio
+import gc
 from transformers import pipeline
 from src.config.logs_config import get_logger
 
@@ -504,9 +505,7 @@ class ASRModelManager:
                 if model_name in self.models and hasattr(self.models[model_name], 'unload_model'):
                     self.models[model_name].unload_model()
                     logger.debug(f"Temporarily unloaded model: {model_name}")
-            
-            # Force garbage collection
-            import gc
+
             gc.collect()
             
             # Clear VRAM
