@@ -79,7 +79,7 @@ class LangchainModelLoader:
             "top_p": kwargs.get("top_p", 0.90),
             "openai_api_base": settings.INFERENCE_SERVER_URL,
             "max_retries": 0,
-            "timeout": 180
+            "timeout": 1200
         }
         
         # Only add openai_api_key if it exists

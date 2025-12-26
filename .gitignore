@@ -25,3 +25,9 @@ asr-service-api.tar
 /models_cache/
 
 src/data/
+
+asr_models_cache/
+
+asr-service-with-models.tar
+
+asr-service.tar

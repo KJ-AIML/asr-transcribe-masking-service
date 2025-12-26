@@ -43,7 +43,7 @@ class ProcessUnifiedStereoAction:
         self.AMBIGUOUS_CHANNEL_LABEL = "Unknown"
         
         # Processing thresholds
-        self.NEW_TURN_THRESHOLD = 1.0  # seconds
+        self.NEW_TURN_THRESHOLD = 0.3  # seconds
         self.FUSE_GAP = 0.25  # seconds
         self.REBUILD_GAP = 0.0  # for Thai (non-space delimited)
         self.MAX_WORD_DURATION = 2.0  # seconds
@@ -354,7 +354,9 @@ class ProcessUnifiedStereoAction:
             if should_start_new:
                 # Finish current segment
                 if current_segment:
-                    current_segment["text"] = "".join(w["word"] for w in current_segment["words"]).strip()
+                    current_segment["text"] = " ".join(
+                        w["word"] for w in current_segment["words"]
+                    ).strip()
                     segments.append(current_segment)
                 
                 # Start new segment
@@ -372,11 +374,24 @@ class ProcessUnifiedStereoAction:
                 current_segment["words"].append(word)
                 current_segment["end"] = word["end"]
         
-        # Finish last segment
         if current_segment:
-            current_segment["text"] = "".join(w["word"] for w in current_segment["words"]).strip()
+            current_segment["text"] = " ".join(
+                w["word"] for w in current_segment["words"]
+            ).strip()
             segments.append(current_segment)
-        
+
+        # Sort segments by start time
+        segments.sort(key=lambda s: s.get("start", 0))
+
+        # Ensure segments do not overlap in time
+        for i in range(len(segments) - 1):
+            current = segments[i]
+            nxt = segments[i + 1]
+
+            # Only adjust when next segment clearly starts after current
+            if nxt["start"] > current["start"] and current["end"] > nxt["start"]:
+                current["end"] = nxt["start"]
+
         return segments
     
     def _generate_json_structure(self, transcription_result: Dict[str, Any], filename: str) -> Dict[str, Any]:

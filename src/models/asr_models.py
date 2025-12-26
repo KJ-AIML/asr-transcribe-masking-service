@@ -1,12 +1,18 @@
 from typing import Dict, Any, Optional, List
+from pathlib import Path
 import torch
 import time
 import asyncio
 import gc
 from transformers import pipeline
+from huggingface_hub import snapshot_download
 from src.config.logs_config import get_logger
 
 logger = get_logger(__name__)
+
+BASE_DIR = Path(__file__).resolve().parents[2]
+ASR_MODELS_CACHE_DIR = BASE_DIR / "asr_models_cache"
+ASR_MODELS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 class ASRModelBase:
     """Base class for ASR models"""
@@ -147,9 +153,28 @@ class PathummaASR(ASRModelBase):
             return
             
         try:
+            cache_dir = ASR_MODELS_CACHE_DIR
+
+            try:
+                local_model_path = snapshot_download(
+                    repo_id=self.model_name,
+                    cache_dir=str(cache_dir),
+                    local_files_only=True,
+                )
+                logger.info(f"Using cached Pathumma model from {local_model_path}")
+            except Exception:
+                logger.info(
+                    f"Pathumma model not found in cache, downloading to {cache_dir}"
+                )
+                local_model_path = snapshot_download(
+                    repo_id=self.model_name,
+                    cache_dir=str(cache_dir),
+                    local_files_only=False,
+                )
+
             self._model = pipeline(
                 task="automatic-speech-recognition",
-                model=self.model_name,
+                model=local_model_path,
                 return_timestamps="word",
                 torch_dtype=self.torch_dtype,
                 device=self.device,
@@ -263,7 +288,6 @@ class PathummaASR(ASRModelBase):
                 torch.cuda.reset_peak_memory_stats()
                 
                 # Force garbage collection
-                import gc
                 gc.collect()
                 
                 logger.debug(f"Pathumma model: VRAM freed. Current VRAM: {torch.cuda.memory_allocated() / 1024**3:.2f}GB")
@@ -313,7 +337,6 @@ class ASRModelManager:
                 self.clear_cache()
                 
                 # Force garbage collection
-                import gc
                 gc.collect()
             except Exception as e:
                 logger.error(f"Error with {model_name}: {e}")
@@ -486,8 +509,7 @@ class ASRModelManager:
                         model.unload_model()
                         logger.debug(f"Aggressive cache clear: unloaded {model_name}")
                         
-            # Force garbage collection
-            import gc
+            # Force garbage collection   
             gc.collect()
             
             logger.debug(f"ASR model caches cleared" + (" (aggressive mode)" if aggressive else ""))

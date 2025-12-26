@@ -492,7 +492,7 @@ class ProcessWav2FileAction:
 
             logger.info(f"Transcription completed for session {session.session_id}")
 
-            # Create chunk_dict with desired structure
+            # Create chunk_dict with desired structure (summary: text only)
             chunk_dict = {}
             for chunk_result in transcription_results:
                 chunk_id = chunk_result["chunk_index"]
@@ -521,6 +521,29 @@ class ProcessWav2FileAction:
                     },
                 }
 
+            # Sanitize transcription_results for response: keep only text/error per model
+            sanitized_results = []
+            for chunk_result in transcription_results:
+                transcriptions = chunk_result.get("transcriptions", {})
+                sanitized_transcriptions = {}
+                for model_name, result in transcriptions.items():
+                    if isinstance(result, dict):
+                        sanitized_transcriptions[model_name] = {
+                            "text": result.get("text", ""),
+                            "error": result.get("error"),
+                        }
+                    else:
+                        sanitized_transcriptions[model_name] = {
+                            "text": str(result),
+                            "error": None,
+                        }
+
+                sanitized_chunk = {
+                    **chunk_result,
+                    "transcriptions": sanitized_transcriptions,
+                }
+                sanitized_results.append(sanitized_chunk)
+
             return {
                 "action": "wav_file_transcribed",
                 "filename": filename,
@@ -535,7 +558,7 @@ class ProcessWav2FileAction:
                     "total_processing_time_ms": session.total_processing_time_ms,
                     "model_processing_times": session.model_processing_times,
                 },
-                "results": transcription_results,
+                "results": sanitized_results,
                 "chunk_dict": chunk_dict,
                 "session_summary": session.summary_stats,
             }
