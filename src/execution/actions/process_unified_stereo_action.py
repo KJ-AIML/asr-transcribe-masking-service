@@ -19,6 +19,7 @@ from src.execution.actions.process_choose_model_action import ProcessChooseModel
 from src.models.asr_models import ASRModelManager
 from src.models.transcription_model_adapter import transcription_adapter
 from src.utils.file.json_utils import save_result_to_json
+from src.utils.audio.chunk_wav_audio import vad_segment_audio_bytes
 
 
 logger = get_logger(__name__)
@@ -47,6 +48,7 @@ class ProcessUnifiedStereoAction:
         self.FUSE_GAP = 0.25  # seconds
         self.REBUILD_GAP = 0.0  # for Thai (non-space delimited)
         self.MAX_WORD_DURATION = 2.0  # seconds
+        self.max_concurrent_chunks = 3
         
     async def execute(
         self,
@@ -169,16 +171,30 @@ class ProcessUnifiedStereoAction:
         logger.info(f"Processing stereo with speaker separation using {model_name}")
         
         try:
-            # Step 1: Load and split stereo audio
             logger.info("Loading and splitting stereo audio...")
             left_channel_data, right_channel_data, duration = await self._load_and_split_stereo(audio_path)
-            
-            # Step 2: Transcribe each channel
-            logger.info("Transcribing left channel (Agent)...")
-            left_result = await self._transcribe_channel(left_channel_data, model_name, self.LEFT_CHANNEL_LABEL)
-            
-            logger.info("Transcribing right channel (Caller)...")
-            right_result = await self._transcribe_channel(right_channel_data, model_name, self.RIGHT_CHANNEL_LABEL)
+
+            semaphore = asyncio.Semaphore(self.max_concurrent_chunks)
+
+            logger.info("Transcribing left and right channels concurrently...")
+            left_task = asyncio.create_task(
+                self._transcribe_channel(
+                    left_channel_data,
+                    model_name,
+                    self.LEFT_CHANNEL_LABEL,
+                    semaphore,
+                )
+            )
+            right_task = asyncio.create_task(
+                self._transcribe_channel(
+                    right_channel_data,
+                    model_name,
+                    self.RIGHT_CHANNEL_LABEL,
+                    semaphore,
+                )
+            )
+
+            left_result, right_result = await asyncio.gather(left_task, right_task)
             
             # Step 3: Merge results with word-level timestamps
             logger.info("Merging stereo results...")
@@ -259,39 +275,38 @@ class ProcessUnifiedStereoAction:
             logger.error(f"Error loading and splitting stereo audio: {e}")
             raise
     
-    async def _transcribe_channel(self, channel_data: Dict[str, Any], model_name: str, channel_label: str) -> Dict[str, Any]:
+    async def _transcribe_channel(self, channel_data: Dict[str, Any], model_name: str, channel_label: str, semaphore: Optional[asyncio.Semaphore] = None) -> Dict[str, Any]:
         """Transcribe a single channel using model adapter"""
         logger.info(f"Transcribing {channel_label} channel with {model_name}...")
-        
+
         try:
-            # Get audio bytes from channel data
             audio_bytes = channel_data.get("audio_bytes")
             if not audio_bytes:
                 raise ValueError(f"No audio bytes found for {channel_label} channel")
-            
-            # Create temporary file for channel audio
+            if model_name in ["pathumma", "pathumma_noise"]:
+                return await self._transcribe_channel_chunked(
+                    audio_bytes,
+                    channel_data,
+                    model_name,
+                    channel_label,
+                    semaphore,
+                )
+
             with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
                 tmp_file.write(audio_bytes)
                 channel_audio_path = tmp_file.name
-            
             try:
-                # Use transcription adapter
                 result = await transcription_adapter.transcribe_with_model(
                     audio_path=channel_audio_path,
                     model_name=model_name,
-                    language="th"
+                    language="th",
                 )
-                
-                # Add channel metadata to result
                 result["channel"] = channel_label
                 result["speaker"] = channel_data.get("speaker", channel_label)
                 result["duration"] = channel_data.get("duration", 0)
-                
                 logger.info(f"Channel {channel_label} transcription completed")
                 return result
-                
             finally:
-                # Clean up temporary file
                 if os.path.exists(channel_audio_path):
                     os.unlink(channel_audio_path)
             
@@ -325,6 +340,74 @@ class ProcessUnifiedStereoAction:
             "language": left_result.get("language", "th"),
             "duration": duration
         }
+
+    async def _transcribe_channel_chunked(self, audio_bytes: bytes, channel_data: Dict[str, Any], model_name: str, channel_label: str, semaphore: Optional[asyncio.Semaphore] = None) -> Dict[str, Any]:
+        logger.info(f"Chunked transcription for {channel_label} with {model_name}")
+        if semaphore is None:
+            semaphore = asyncio.Semaphore(self.max_concurrent_chunks)
+
+        segment_info = vad_segment_audio_bytes(
+            wav_bytes=audio_bytes,
+            target_sr=16_000,
+            top_db=30.0,
+            min_speech_sec=0.3,
+            min_silence_sec=0.3,
+            max_segment_sec=60.0,
+        )
+
+        async def process_single_chunk(chunk) -> List[Dict[str, Any]]:
+            async with semaphore:
+                chunk_bytes = chunk.to_bytes()
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
+                    tmp_file.write(chunk_bytes)
+                    chunk_audio_path = tmp_file.name
+                try:
+                    chunk_result = await transcription_adapter.transcribe_with_model(
+                        audio_path=chunk_audio_path,
+                        model_name=model_name,
+                        language="th",
+                    )
+                finally:
+                    if os.path.exists(chunk_audio_path):
+                        os.unlink(chunk_audio_path)
+
+                words = chunk_result.get("words", [])
+                if not words:
+                    return []
+
+                offset = float(chunk.start_sec)
+                shifted_words: List[Dict[str, Any]] = []
+                for w in words:
+                    w_start = float(w.get("start", 0.0)) + offset
+                    w_end = float(w.get("end", 0.0)) + offset
+                    w["start"] = w_start
+                    w["end"] = w_end
+                    shifted_words.append(w)
+                return shifted_words
+
+        tasks: List[asyncio.Task] = []
+        for chunk in segment_info["segments"]:
+            tasks.append(asyncio.create_task(process_single_chunk(chunk)))
+
+        all_words: List[Dict[str, Any]] = []
+        if tasks:
+            results = await asyncio.gather(*tasks)
+            for words in results:
+                all_words.extend(words)
+
+        all_words.sort(key=lambda w: w.get("start", 0.0))
+        all_words = self._sanitize_words(all_words)
+
+        result: Dict[str, Any] = {
+            "words": all_words,
+            "segments": self._build_segments_from_words(all_words),
+            "language": "th",
+            "duration": channel_data.get("duration", 0),
+        }
+        result["channel"] = channel_label
+        result["speaker"] = channel_data.get("speaker", channel_label)
+        logger.info(f"Channel {channel_label} chunked transcription completed with {len(all_words)} words")
+        return result
     
     def _build_segments_from_words(self, words: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Build segments from words based on speaker turns and pauses"""
@@ -354,9 +437,7 @@ class ProcessUnifiedStereoAction:
             if should_start_new:
                 # Finish current segment
                 if current_segment:
-                    current_segment["text"] = " ".join(
-                        w["word"] for w in current_segment["words"]
-                    ).strip()
+                    self._sanitize_segment(current_segment)
                     segments.append(current_segment)
                 
                 # Start new segment
@@ -375,9 +456,7 @@ class ProcessUnifiedStereoAction:
                 current_segment["end"] = word["end"]
         
         if current_segment:
-            current_segment["text"] = " ".join(
-                w["word"] for w in current_segment["words"]
-            ).strip()
+            self._sanitize_segment(current_segment)
             segments.append(current_segment)
 
         # Sort segments by start time
@@ -393,6 +472,57 @@ class ProcessUnifiedStereoAction:
                 current["end"] = nxt["start"]
 
         return segments
+
+    def _sanitize_segment(self, segment: Dict[str, Any]) -> None:
+        words = segment.get("words", [])
+        if not words:
+            segment["text"] = ""
+            return
+        start = float(segment.get("start", 0.0))
+        end = float(segment.get("end", start))
+        duration = max(end - start, 0.01)
+        max_tokens_per_sec = 8.0
+        max_tokens = int(max_tokens_per_sec * duration) + 4
+        if len(words) > max_tokens:
+            words = words[:max_tokens]
+            segment["words"] = words
+            if words:
+                segment["end"] = float(words[-1].get("end", end))
+        segment["text"] = " ".join(w["word"] for w in words).strip()
+    
+    def _sanitize_words(self, words: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if not words:
+            return []
+
+        cleaned: List[Dict[str, Any]] = []
+        zero_length_run = 0
+        eps = 1e-3
+
+        for w in words:
+            start = float(w.get("start", 0.0))
+            end = float(w.get("end", start))
+            duration = end - start
+
+            if duration < 0:
+                continue
+
+            if duration <= eps:
+                if cleaned:
+                    prev_end = float(cleaned[-1].get("end", 0.0))
+                    if abs(start - prev_end) <= 0.05:
+                        zero_length_run += 1
+                        if zero_length_run > 2:
+                            continue
+                    else:
+                        zero_length_run = 0
+                else:
+                    zero_length_run = 0
+            else:
+                zero_length_run = 0
+
+            cleaned.append(w)
+
+        return cleaned
     
     def _generate_json_structure(self, transcription_result: Dict[str, Any], filename: str) -> Dict[str, Any]:
         """
