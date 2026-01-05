@@ -233,3 +233,75 @@ def process_chunks_in_batches(
     except Exception as e:
         logger.error(f"Error processing chunks in batches: {e}")
         raise
+
+
+def vad_segment_audio_bytes(
+    wav_bytes: bytes,
+    target_sr: int = 16_000,
+    top_db: float = 30.0,
+    min_speech_sec: float = 0.3,
+    min_silence_sec: float = 0.3,
+    max_segment_sec: float = 60.0,
+) -> Dict[str, Any]:
+    try:
+        buffer = io.BytesIO(wav_bytes)
+        y, sr = librosa.load(buffer, sr=None, mono=True)
+        if sr != target_sr:
+            y = librosa.resample(y, orig_sr=sr, target_sr=target_sr)
+            sr = target_sr
+        if len(y) == 0:
+            return {
+                "sample_rate": sr,
+                "total_duration_sec": 0.0,
+                "segments": [],
+            }
+        total_duration = float(len(y) / sr)
+        intervals = librosa.effects.split(y, top_db=top_db)
+        merged: List[Tuple[int, int]] = []
+        for start, end in intervals:
+            if not merged:
+                merged.append((start, end))
+                continue
+            last_start, last_end = merged[-1]
+            gap_sec = (start - last_end) / sr
+            if gap_sec < min_silence_sec:
+                merged[-1] = (last_start, end)
+            else:
+                merged.append((start, end))
+        segments_samples: List[Tuple[int, int]] = []
+        for start, end in merged:
+            duration_sec = (end - start) / sr
+            if duration_sec < min_speech_sec:
+                continue
+            if duration_sec <= max_segment_sec:
+                segments_samples.append((start, end))
+                continue
+            max_samples = int(max_segment_sec * sr)
+            current = start
+            while current < end:
+                seg_end = min(current + max_samples, end)
+                if seg_end > current:
+                    segments_samples.append((current, seg_end))
+                current = seg_end
+        segments: List[AudioChunk] = []
+        for idx, (start, end) in enumerate(segments_samples):
+            seg_y = y[start:end]
+            start_sec = start / sr
+            end_sec = end / sr
+            segments.append(
+                AudioChunk(
+                    chunk_index=idx,
+                    audio_data=seg_y,
+                    sample_rate=sr,
+                    start_sec=start_sec,
+                    end_sec=end_sec,
+                )
+            )
+        return {
+            "sample_rate": sr,
+            "total_duration_sec": total_duration,
+            "segments": segments,
+        }
+    except Exception as e:
+        logger.error(f"Error in VAD segmentation: {e}")
+        raise
