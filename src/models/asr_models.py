@@ -61,8 +61,8 @@ class ASRModelBase:
 class TyphoonASR(ASRModelBase):
     """Typhoon ASR (example). Keep lazy-load behaviour as in your original code."""
 
-    def __init__(self):
-        super().__init__("typhoon")
+    def __init__(self, device: Optional[str] = None):
+        super().__init__("typhoon", device=device)
         self._transcribe_fn = None
         self._model_loaded = False
         self._load_lock = asyncio.Lock()
@@ -153,8 +153,8 @@ class PathummaASR(ASRModelBase):
     moving models to device only when requested. Chunking and dtype casting are handled.
     """
 
-    def __init__(self, model_name: str = "nectec/Pathumma-whisper-th-large-v3", chunk_sec: int = 25):
-        super().__init__(model_name)
+    def __init__(self, model_name: str = "nectec/Pathumma-whisper-th-large-v3", chunk_sec: int = 25, device: Optional[str] = None):
+        super().__init__(model_name, device=device)
         self.lang = "th"
         self.task = "transcribe"
         self._model_loaded = False
@@ -357,21 +357,22 @@ class PathummaASR(ASRModelBase):
 
 
 class PathummaNoiseASR(PathummaASR):
-    def __init__(self):
-        super().__init__("PogusTheWhisper/Pathumma-whisper-th-large-v3-natural-noise-finetuned")
+    def __init__(self, device: Optional[str] = None):
+        super().__init__("PogusTheWhisper/Pathumma-whisper-th-large-v3-natural-noise-finetuned", device=device)
 
 class ASRModelManager:
-    def __init__(self, max_loaded_models: int = 1):
+    def __init__(self, max_loaded_models: int = 1, device: Optional[str] = None):
         self.models: Dict[str, ASRModelBase] = {}
         self.max_loaded_models = max_loaded_models
         self._loaded_order: OrderedDict = OrderedDict()
+        self.device = device
         self._register_models()
 
     def _register_models(self):
         # Create model wrappers but do NOT load heavy weights here
-        self.models["typhoon"] = TyphoonASR()
-        self.models["pathumma"] = PathummaASR()
-        self.models["pathumma_noise"] = PathummaNoiseASR()
+        self.models["typhoon"] = TyphoonASR(device=self.device)
+        self.models["pathumma"] = PathummaASR(device=self.device)
+        self.models["pathumma_noise"] = PathummaNoiseASR(device=self.device)
         logger.info("ASR models registered (lazy load).")
 
     async def ensure_model_loaded(self, model_name: str):
