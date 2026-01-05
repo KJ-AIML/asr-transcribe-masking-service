@@ -61,8 +61,8 @@ class ASRModelBase:
 class TyphoonASR(ASRModelBase):
     """Typhoon ASR (example). Keep lazy-load behaviour as in your original code."""
 
-    def __init__(self):
-        super().__init__("typhoon")
+    def __init__(self, device: Optional[str] = None):
+        super().__init__("typhoon", device=device)
         self._transcribe_fn = None
         self._model_loaded = False
         self._load_lock = asyncio.Lock()
@@ -153,13 +153,14 @@ class PathummaASR(ASRModelBase):
     moving models to device only when requested. Chunking and dtype casting are handled.
     """
 
-    def __init__(self, model_name: str = "nectec/Pathumma-whisper-th-large-v3", chunk_sec: int = 25):
-        super().__init__(model_name)
+    def __init__(self, model_name: str = "nectec/Pathumma-whisper-th-large-v3", chunk_sec: int = 25, device: Optional[str] = None):
+        super().__init__(model_name, device=device)
         self.lang = "th"
         self.task = "transcribe"
         self._model_loaded = False
         self._processor: Optional[WhisperProcessor] = None
         self._wf_model: Optional[WhisperForConditionalGeneration] = None
+        self._forced_decoder_ids = None
         self._load_lock = asyncio.Lock()
         self.num_beams = 1
         self.max_new_tokens = 256
@@ -202,10 +203,14 @@ class PathummaASR(ASRModelBase):
             logger.warning(f"snapshot_download failed: {e} - will try to load from hub directly")
             local_model_path = self.model_name
 
-        # load processor and model with dtype control
         self._processor = WhisperProcessor.from_pretrained(local_model_path)
 
-        # Use from_pretrained so we can control dtype and low_cpu_mem_usage
+        try:
+            self._forced_decoder_ids = self._processor.get_decoder_prompt_ids(language=self.lang, task=self.task)
+        except Exception:
+            logger.exception("Failed to compute forced_decoder_ids; will use default decoding")
+            self._forced_decoder_ids = None
+
         self._wf_model = WhisperForConditionalGeneration.from_pretrained(
             local_model_path,
             torch_dtype=self.torch_dtype,
@@ -221,12 +226,15 @@ class PathummaASR(ASRModelBase):
 
         self._wf_model.eval()
 
-        # generation config
         try:
             self._wf_model.generation_config.use_cache = False
             self._wf_model.generation_config.task = self.task
-            # don't set temperature by default, set beam via attribute
             self._wf_model.generation_config.num_beams = self.num_beams
+            if self._forced_decoder_ids is not None:
+                try:
+                    self._wf_model.generation_config.forced_decoder_ids = self._forced_decoder_ids
+                except Exception:
+                    logger.exception("Failed to set forced_decoder_ids on generation_config")
         except Exception:
             logger.debug("Failed to set generation_config - fine.")
 
@@ -273,7 +281,6 @@ class PathummaASR(ASRModelBase):
                     if chunk.numel() == 0:
                         continue
 
-                    # processor accepts raw audio (list / numpy / torch) - keep on CPU
                     inputs = self._processor(
                         chunk,
                         sampling_rate=16000,
@@ -288,11 +295,15 @@ class PathummaASR(ASRModelBase):
 
                     attention_mask = inputs.attention_mask.to(device=self.device) if "attention_mask" in inputs else None
 
+                    generate_kwargs = {
+                        "attention_mask": attention_mask,
+                        "max_new_tokens": self.max_new_tokens,
+                        "num_beams": self.num_beams,
+                    }
+
                     generated = self._wf_model.generate(
                         input_features,
-                        attention_mask=attention_mask,
-                        max_new_tokens=self.max_new_tokens,
-                        num_beams=self.num_beams,
+                        **generate_kwargs,
                     )
 
                     text = self._processor.batch_decode(generated, skip_special_tokens=True)[0]
@@ -346,21 +357,22 @@ class PathummaASR(ASRModelBase):
 
 
 class PathummaNoiseASR(PathummaASR):
-    def __init__(self):
-        super().__init__("PogusTheWhisper/Pathumma-whisper-th-large-v3-natural-noise-finetuned")
+    def __init__(self, device: Optional[str] = None):
+        super().__init__("PogusTheWhisper/Pathumma-whisper-th-large-v3-natural-noise-finetuned", device=device)
 
 class ASRModelManager:
-    def __init__(self, max_loaded_models: int = 1):
+    def __init__(self, max_loaded_models: int = 1, device: Optional[str] = None):
         self.models: Dict[str, ASRModelBase] = {}
         self.max_loaded_models = max_loaded_models
         self._loaded_order: OrderedDict = OrderedDict()
+        self.device = device
         self._register_models()
 
     def _register_models(self):
         # Create model wrappers but do NOT load heavy weights here
-        self.models["typhoon"] = TyphoonASR()
-        self.models["pathumma"] = PathummaASR()
-        self.models["pathumma_noise"] = PathummaNoiseASR()
+        self.models["typhoon"] = TyphoonASR(device=self.device)
+        self.models["pathumma"] = PathummaASR(device=self.device)
+        self.models["pathumma_noise"] = PathummaNoiseASR(device=self.device)
         logger.info("ASR models registered (lazy load).")
 
     async def ensure_model_loaded(self, model_name: str):

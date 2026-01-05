@@ -17,7 +17,7 @@ import soundfile as sf
 from src.config.logs_config import get_logger
 from src.execution.actions.process_choose_model_action import ProcessChooseModelAction
 from src.models.asr_models import ASRModelManager
-from src.models.transcription_model_adapter import transcription_adapter
+from src.models.transcription_model_adapter import TranscriptionModelAdapter
 from src.utils.file.json_utils import save_result_to_json
 from src.utils.audio.chunk_wav_audio import vad_segment_audio_bytes
 
@@ -36,7 +36,10 @@ class ProcessUnifiedStereoAction:
     
     def __init__(self):
         self.choose_model_action = ProcessChooseModelAction()
-        self.asr_manager = ASRModelManager()
+        self.asr_manager_agent = None
+        self.asr_manager_caller = None
+        self.adapter_agent = None
+        self.adapter_caller = None
         
         # Speaker mapping from 3party
         self.LEFT_CHANNEL_LABEL = "Agent"
@@ -50,6 +53,44 @@ class ProcessUnifiedStereoAction:
         self.MAX_WORD_DURATION = 2.0  # seconds
         # Limit concurrent Pathumma chunks to reduce VRAM spikes on smaller GPUs
         self.max_concurrent_chunks = 1
+
+        self._init_per_channel_managers()
+
+    def _init_per_channel_managers(self) -> None:
+        device_count = 0
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                device_count = torch.cuda.device_count()
+        except Exception:
+            device_count = 0
+
+        if device_count >= 2:
+            agent_device = "cuda:0"
+            caller_device = "cuda:1"
+        elif device_count == 1:
+            agent_device = "cuda:0"
+            caller_device = "cuda:0"
+        else:
+            agent_device = "cpu"
+            caller_device = "cpu"
+
+        self.asr_manager_agent = ASRModelManager(device=agent_device)
+        self.asr_manager_caller = ASRModelManager(device=caller_device)
+
+        self.adapter_agent = TranscriptionModelAdapter()
+        self.adapter_caller = TranscriptionModelAdapter()
+
+        from src.models.transcription_model_adapter import TyphoonAdapter, WhisperAdapter
+
+        self.adapter_agent.register_adapter("typhoon", TyphoonAdapter(self.asr_manager_agent))
+        self.adapter_agent.register_adapter("pathumma", WhisperAdapter("pathumma", self.asr_manager_agent))
+        self.adapter_agent.register_adapter("pathumma_noise", WhisperAdapter("pathumma_noise", self.asr_manager_agent))
+
+        self.adapter_caller.register_adapter("typhoon", TyphoonAdapter(self.asr_manager_caller))
+        self.adapter_caller.register_adapter("pathumma", WhisperAdapter("pathumma", self.asr_manager_caller))
+        self.adapter_caller.register_adapter("pathumma_noise", WhisperAdapter("pathumma_noise", self.asr_manager_caller))
         
     async def execute(
         self,
@@ -134,13 +175,16 @@ class ProcessUnifiedStereoAction:
             }
 
             try:
-                # Add the file path before saving
-                result["json_file_path"] = (
-                    f"src/data/wav2files/{filename}_unified_stereo.json"
-                )
                 json_file_path = save_result_to_json(
                     result, f"{filename}_unified_stereo"
                 )
+                result["json_file_path"] = json_file_path
+
+                json_structure_path = save_result_to_json(
+                    json_structure, f"{filename}_json_structure_unified_stereo"
+                )
+                json_structure["json_file_path"] = json_structure_path
+
                 logger.info(f"Unified stereo results saved to: {json_file_path}")
             except Exception as e:
                 logger.error(f"Failed to save results to JSON: {str(e)}")
@@ -276,6 +320,13 @@ class ProcessUnifiedStereoAction:
             logger.error(f"Error loading and splitting stereo audio: {e}")
             raise
     
+    def _get_adapter_for_channel(self, channel_label: str) -> TranscriptionModelAdapter:
+        if channel_label == self.LEFT_CHANNEL_LABEL:
+            return self.adapter_agent
+        if channel_label == self.RIGHT_CHANNEL_LABEL:
+            return self.adapter_caller
+        return self.adapter_agent
+
     async def _transcribe_channel(self, channel_data: Dict[str, Any], model_name: str, channel_label: str, semaphore: Optional[asyncio.Semaphore] = None) -> Dict[str, Any]:
         """Transcribe a single channel using model adapter"""
         logger.info(f"Transcribing {channel_label} channel with {model_name}...")
@@ -284,6 +335,8 @@ class ProcessUnifiedStereoAction:
             audio_bytes = channel_data.get("audio_bytes")
             if not audio_bytes:
                 raise ValueError(f"No audio bytes found for {channel_label} channel")
+            adapter = self._get_adapter_for_channel(channel_label)
+
             if model_name in ["pathumma", "pathumma_noise"]:
                 return await self._transcribe_channel_chunked(
                     audio_bytes,
@@ -297,7 +350,7 @@ class ProcessUnifiedStereoAction:
                 tmp_file.write(audio_bytes)
                 channel_audio_path = tmp_file.name
             try:
-                result = await transcription_adapter.transcribe_with_model(
+                result = await adapter.transcribe_with_model(
                     audio_path=channel_audio_path,
                     model_name=model_name,
                     language="th",
@@ -350,11 +403,13 @@ class ProcessUnifiedStereoAction:
         segment_info = vad_segment_audio_bytes(
             wav_bytes=audio_bytes,
             target_sr=16_000,
-            top_db=30.0,
-            min_speech_sec=0.3,
-            min_silence_sec=0.3,
+            top_db=25.0,
+            min_speech_sec=0.2,
+            min_silence_sec=0.2,
             max_segment_sec=60.0,
         )
+
+        adapter = self._get_adapter_for_channel(channel_label)
 
         async def process_single_chunk(chunk) -> List[Dict[str, Any]]:
             async with semaphore:
@@ -363,7 +418,7 @@ class ProcessUnifiedStereoAction:
                     tmp_file.write(chunk_bytes)
                     chunk_audio_path = tmp_file.name
                 try:
-                    chunk_result = await transcription_adapter.transcribe_with_model(
+                    chunk_result = await adapter.transcribe_with_model(
                         audio_path=chunk_audio_path,
                         model_name=model_name,
                         language="th",
@@ -537,7 +592,6 @@ class ProcessUnifiedStereoAction:
         simple_text = self._generate_simple_text(segments)
         
         return {
-            "transcript": {
                 "text": formatted_text,
                 "simple_text": simple_text,
                 "segments": segments,
@@ -566,7 +620,6 @@ class ProcessUnifiedStereoAction:
                     "generated_at": datetime.now().isoformat(),
                     "format_version": "1.0"
                 }
-            }
         }
     
     def _generate_formatted_text(self, segments: List[Dict[str, Any]]) -> str:
