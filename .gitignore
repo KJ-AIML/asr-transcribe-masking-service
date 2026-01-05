@@ -31,3 +31,4 @@ asr_models_cache/
 asr-service-with-models.tar
 
 asr-service.tar
+asr-transcribe-masking-service.zip

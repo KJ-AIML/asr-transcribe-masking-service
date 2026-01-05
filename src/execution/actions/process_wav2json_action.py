@@ -1,15 +1,13 @@
 """
-Action for unified stereo transcription processing
+Action for wav2json transcription processing
 Combines model selection, speaker separation, and JSON structure generation
 """
 from typing import Dict, Any, Optional, List
 import asyncio
 import tempfile
 import os
-import json
 import time
 from datetime import datetime
-import logging
 import io
 import numpy as np
 import librosa
@@ -25,9 +23,9 @@ from src.utils.audio.chunk_wav_audio import vad_segment_audio_bytes
 logger = get_logger(__name__)
 
 
-class ProcessUnifiedStereoAction:
+class ProcessWav2JsonAction:
     """
-    Unified action that processes stereo WAV files through complete pipeline:
+    Action that processes WAV files through wav2json pipeline:
     1. Model selection (if enabled)
     2. Speaker separation (Agent/Caller)
     3. Transcription with word-level timestamps
@@ -44,11 +42,10 @@ class ProcessUnifiedStereoAction:
         self.AMBIGUOUS_CHANNEL_LABEL = "Unknown"
         
         # Processing thresholds
-        self.NEW_TURN_THRESHOLD = 0.3  # seconds
-        self.FUSE_GAP = 0.25  # seconds
-        self.REBUILD_GAP = 0.0  # for Thai (non-space delimited)
-        self.MAX_WORD_DURATION = 2.0  # seconds
-        # Limit concurrent Pathumma chunks to reduce VRAM spikes on smaller GPUs
+        self.NEW_TURN_THRESHOLD = 0.3 
+        self.FUSE_GAP = 0.25 
+        self.REBUILD_GAP = 0.0
+        self.MAX_WORD_DURATION = 2.0
         self.max_concurrent_chunks = 1
         
     async def execute(
@@ -60,7 +57,7 @@ class ProcessUnifiedStereoAction:
         auto_continue: bool = True
     ) -> Dict[str, Any]:
         """
-        Execute unified stereo processing
+        Execute wav2json processing
         
         Args:
             file_content: Binary content of WAV file
@@ -72,7 +69,7 @@ class ProcessUnifiedStereoAction:
         Returns:
             Dict with complete processing results
         """
-        logger.info(f"Starting unified stereo processing for: {filename}")
+        logger.info(f"Starting wav2json processing for: {filename}")    
         
         tmp_path = None
         try:
@@ -94,11 +91,11 @@ class ProcessUnifiedStereoAction:
                     "reasoning": "Model selection skipped - using default",
                 }
             
-            # Step 2: Stereo Processing and Transcription
-            logger.info(f"Processing stereo with model: {selected_model}")
+            # Step 2: Wav2Json Processing and Transcription
+            logger.info(f"Processing wav2json with model: {selected_model}")
             
-            # Process stereo with speaker separation
-            transcription_result = await self._process_stereo_with_speaker_separation(
+            # Process wav2json with speaker separation
+            transcription_result = await self._process_wav2json_with_speaker_separation(
                 tmp_path, selected_model
             )
             
@@ -112,14 +109,14 @@ class ProcessUnifiedStereoAction:
             process_json_result = None
             if auto_continue:
                 logger.info("Auto-continuing to process_json...")
-                # TODO: Call process_json_endpoint internally
+                # TODO:
                 process_json_result = {
                     "status": "pending",
                     "message": "Process_json integration pending"
                 }
             
             result = {
-                "action": "unified_stereo_processed",
+                "action": "wav2json_processed",
                 "filename": filename,
                 "status": "completed",
                 "model_selection": model_selection_result,
@@ -136,21 +133,21 @@ class ProcessUnifiedStereoAction:
             try:
                 # Add the file path before saving
                 result["json_file_path"] = (
-                    f"src/data/wav2files/{filename}_unified_stereo.json"
+                    f"src/data/wav2files/{filename}_wav2json.json"
                 )
                 json_file_path = save_result_to_json(
-                    result, f"{filename}_unified_stereo"
+                    result, f"{filename}_wav2json"
                 )
-                logger.info(f"Unified stereo results saved to: {json_file_path}")
+                logger.info(f"Wav2Json results saved to: {json_file_path}")
             except Exception as e:
                 logger.error(f"Failed to save results to JSON: {str(e)}")
 
-            logger.info(f"Unified stereo processing completed for: {filename}")
+                logger.info(f"Wav2Json processing completed for: {filename}")
 
             return result
             
         except Exception as e:
-            logger.error(f"Error in unified stereo processing: {e}")
+            logger.error(f"Error in wav2json processing: {e}")
             raise
             
         finally:
@@ -169,7 +166,7 @@ class ProcessUnifiedStereoAction:
         Step 2: Transcribe each channel separately
         Step 3: Merge results with word-level timestamps
         """
-        logger.info(f"Processing stereo with speaker separation using {model_name}")
+        logger.info(f"Processing wav2json with speaker separation using {model_name}")
         
         try:
             logger.info("Loading and splitting stereo audio...")

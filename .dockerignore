@@ -155,14 +155,16 @@ examples/
 
 .venv/
 
-asr-service-api.tar
-
-src/data/
-
 ./examples/
 
-asr_models_cache/
+asr-service-api.tar
+
+./asr_models_cache/
 
 asr-service-with-models.tar
 
 asr-service.tar
+
+src/data/
+
+
