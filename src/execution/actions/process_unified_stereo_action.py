@@ -350,9 +350,9 @@ class ProcessUnifiedStereoAction:
         segment_info = vad_segment_audio_bytes(
             wav_bytes=audio_bytes,
             target_sr=16_000,
-            top_db=30.0,
-            min_speech_sec=0.3,
-            min_silence_sec=0.3,
+            top_db=25.0,
+            min_speech_sec=0.2,
+            min_silence_sec=0.2,
             max_segment_sec=60.0,
         )
 

@@ -119,21 +119,17 @@ class WhisperAdapter(BaseTranscriptionAdapter):
             if not model:
                 raise ValueError(f"Model {self.model_name} not available")
             
-            # Transcribe using ASRModelManager
             result = await model.transcribe(audio_data)
-            
+
             if result.get("error"):
                 raise Exception(f"Transcription error: {result['error']}")
-            
-            # Use real word-level timestamps from model if available
-            words = result.get("words", [])
-            
-            # If no word timestamps from model, fall back to creation
-            if not words:
-                words = self._create_word_timestamps(result["text"])
-            
-            # Calculate actual duration from audio
+
             duration = self._calculate_audio_duration(audio_data)
+
+            words = result.get("words", [])
+
+            if not words:
+                words = self._create_word_timestamps(result["text"], duration)
             
             return {
                 "words": words,
@@ -148,7 +144,7 @@ class WhisperAdapter(BaseTranscriptionAdapter):
             logger.error(f"Error in {self.model_name} transcription: {e}")
             raise
     
-    def _create_word_timestamps(self, text: str) -> List[Dict[str, Any]]:
+    def _create_word_timestamps(self, text: str, duration: float) -> List[Dict[str, Any]]:
         """
         Fallback method to create word-level timestamps from text
         Only used when model doesn't provide word-level timestamps
@@ -162,8 +158,7 @@ class WhisperAdapter(BaseTranscriptionAdapter):
         if not word_list:
             return words
             
-        # Distribute timestamps evenly across words
-        total_duration = 1.0  # Default duration if we can't calculate
+        total_duration = duration if duration and duration > 0 else 1.0
         word_duration = total_duration / len(word_list)
         
         for i, word in enumerate(word_list):
