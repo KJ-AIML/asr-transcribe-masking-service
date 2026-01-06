@@ -334,12 +334,7 @@ class PathummaASR(ASRModelBase):
                 _DEVICE_LOCKS[device_key] = lock
 
             async with lock:
-                loop = asyncio.get_running_loop()
-                executor = _DEVICE_EXECUTORS.get(device_key)
-                if executor is None:
-                    executor = ThreadPoolExecutor(max_workers=1)
-                    _DEVICE_EXECUTORS[device_key] = executor
-                text = await loop.run_in_executor(executor, self._transcribe_chunks_sync, wav)
+                text = self._transcribe_chunks_sync(wav)
 
             return {"text": text, "words": [], "error": None}
 
