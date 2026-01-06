@@ -15,7 +15,6 @@ ASRModelManager() to suit your GPU VRAM (default=1 for a single large model on o
 
 from typing import Dict, Any, Optional, List
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
 import torch
 import time
 import asyncio
@@ -34,9 +33,6 @@ logger = get_logger(__name__)
 BASE_DIR = Path(__file__).resolve().parents[2]
 ASR_MODELS_CACHE_DIR = BASE_DIR / "asr_models_cache"
 ASR_MODELS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-
-_DEVICE_LOCKS: Dict[str, asyncio.Lock] = {}
-_DEVICE_EXECUTORS: Dict[str, ThreadPoolExecutor] = {}
 
 
 class ASRModelBase:
@@ -270,7 +266,7 @@ class PathummaASR(ASRModelBase):
     def _transcribe_chunks_sync(self, wav: torch.Tensor) -> str:
         results: List[str] = []
 
-        # Ensure correct CUDA device is set for this thread when using GPU
+        # Ensure correct CUDA device is set
         if torch.cuda.is_available() and isinstance(self.device, str) and self.device.startswith("cuda"):
             try:
                 device_index = int(self.device.split(":")[1]) if ":" in self.device else 0
@@ -307,12 +303,15 @@ class PathummaASR(ASRModelBase):
                     **generate_kwargs,
                 )
 
+                # Synchronize CUDA to ensure kernels complete before proceeding
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+
                 text = self._processor.batch_decode(generated, skip_special_tokens=True)[0]
                 results.append(text)
 
+                # Clean up tensors but DON'T call empty_cache() during processing
                 del inputs, input_features, attention_mask, generated
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
 
         return " ".join(results)
 
@@ -327,19 +326,10 @@ class PathummaASR(ASRModelBase):
 
             wav = self._load_audio_tensor(tmp_path)
 
-            device_key = str(self.device)
-            lock = _DEVICE_LOCKS.get(device_key)
-            if lock is None:
-                lock = asyncio.Lock()
-                _DEVICE_LOCKS[device_key] = lock
-
-            async with lock:
-                loop = asyncio.get_running_loop()
-                executor = _DEVICE_EXECUTORS.get(device_key)
-                if executor is None:
-                    executor = ThreadPoolExecutor(max_workers=1)
-                    _DEVICE_EXECUTORS[device_key] = executor
-                text = await loop.run_in_executor(executor, self._transcribe_chunks_sync, wav)
+            # Use instance-level lock for serialization (no executor needed)
+            # This ensures thread-safety by serializing CUDA operations
+            async with self._load_lock:
+                text = self._transcribe_chunks_sync(wav)
 
             return {"text": text, "words": [], "error": None}
 
