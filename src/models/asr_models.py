@@ -15,6 +15,7 @@ ASRModelManager() to suit your GPU VRAM (default=1 for a single large model on o
 
 from typing import Dict, Any, Optional, List
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 import torch
 import time
 import asyncio
@@ -34,8 +35,8 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 ASR_MODELS_CACHE_DIR = BASE_DIR / "asr_models_cache"
 ASR_MODELS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-# Safe-mode: per-device async locks to ensure 1 job per GPU at a time
 _DEVICE_LOCKS: Dict[str, asyncio.Lock] = {}
+_DEVICE_EXECUTORS: Dict[str, ThreadPoolExecutor] = {}
 
 
 class ASRModelBase:
@@ -333,7 +334,12 @@ class PathummaASR(ASRModelBase):
                 _DEVICE_LOCKS[device_key] = lock
 
             async with lock:
-                text = self._transcribe_chunks_sync(wav)
+                loop = asyncio.get_running_loop()
+                executor = _DEVICE_EXECUTORS.get(device_key)
+                if executor is None:
+                    executor = ThreadPoolExecutor(max_workers=1)
+                    _DEVICE_EXECUTORS[device_key] = executor
+                text = await loop.run_in_executor(executor, self._transcribe_chunks_sync, wav)
 
             return {"text": text, "words": [], "error": None}
 
