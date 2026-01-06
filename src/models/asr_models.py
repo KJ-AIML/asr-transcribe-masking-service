@@ -326,7 +326,6 @@ class PathummaASR(ASRModelBase):
 
             wav = self._load_audio_tensor(tmp_path)
 
-            # Safe mode: ensure only one Pathumma job per device at a time
             device_key = str(self.device)
             lock = _DEVICE_LOCKS.get(device_key)
             if lock is None:
@@ -334,8 +333,7 @@ class PathummaASR(ASRModelBase):
                 _DEVICE_LOCKS[device_key] = lock
 
             async with lock:
-                loop = asyncio.get_running_loop()
-                text = await loop.run_in_executor(None, self._transcribe_chunks_sync, wav)
+                text = self._transcribe_chunks_sync(wav)
 
             return {"text": text, "words": [], "error": None}
 
