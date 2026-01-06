@@ -219,15 +219,13 @@ class ProcessUnifiedStereoAction:
             logger.info("Loading and splitting stereo audio...")
             left_channel_data, right_channel_data, duration = await self._load_and_split_stereo(audio_path)
 
-            semaphore = asyncio.Semaphore(self.max_concurrent_chunks)
-
             logger.info("Transcribing left and right channels concurrently...")
             left_task = asyncio.create_task(
                 self._transcribe_channel(
                     left_channel_data,
                     model_name,
                     self.LEFT_CHANNEL_LABEL,
-                    semaphore,
+                    None,
                 )
             )
             right_task = asyncio.create_task(
@@ -235,7 +233,7 @@ class ProcessUnifiedStereoAction:
                     right_channel_data,
                     model_name,
                     self.RIGHT_CHANNEL_LABEL,
-                    semaphore,
+                    None,
                 )
             )
 
@@ -403,9 +401,9 @@ class ProcessUnifiedStereoAction:
         segment_info = vad_segment_audio_bytes(
             wav_bytes=audio_bytes,
             target_sr=16_000,
-            top_db=25.0,
-            min_speech_sec=0.2,
-            min_silence_sec=0.2,
+            top_db=30.0,
+            min_speech_sec=0.5,
+            min_silence_sec=0.5,
             max_segment_sec=60.0,
         )
 
