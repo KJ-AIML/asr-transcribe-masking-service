@@ -35,7 +35,6 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 ASR_MODELS_CACHE_DIR = BASE_DIR / "asr_models_cache"
 ASR_MODELS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-_DEVICE_LOCKS: Dict[str, asyncio.Lock] = {}
 _DEVICE_EXECUTORS: Dict[str, ThreadPoolExecutor] = {}
 
 
@@ -166,6 +165,7 @@ class PathummaASR(ASRModelBase):
         self._wf_model: Optional[WhisperForConditionalGeneration] = None
         self._forced_decoder_ids = None
         self._load_lock = asyncio.Lock()
+        self._transcribe_lock = asyncio.Lock()
         self.num_beams = 1
         self.max_new_tokens = 256
         # safe chunk <= 30 sec (use 25 by default)
@@ -270,14 +270,6 @@ class PathummaASR(ASRModelBase):
     def _transcribe_chunks_sync(self, wav: torch.Tensor) -> str:
         results: List[str] = []
 
-        # Ensure correct CUDA device is set for this thread when using GPU
-        if torch.cuda.is_available() and isinstance(self.device, str) and self.device.startswith("cuda"):
-            try:
-                device_index = int(self.device.split(":")[1]) if ":" in self.device else 0
-                torch.cuda.set_device(device_index)
-            except Exception:
-                logger.exception(f"Failed to set CUDA device {self.device} in _transcribe_chunks_sync")
-
         with torch.no_grad():
             for chunk in self._chunk_audio(wav):
                 if chunk.numel() == 0:
@@ -327,13 +319,7 @@ class PathummaASR(ASRModelBase):
 
             wav = self._load_audio_tensor(tmp_path)
 
-            device_key = str(self.device)
-            lock = _DEVICE_LOCKS.get(device_key)
-            if lock is None:
-                lock = asyncio.Lock()
-                _DEVICE_LOCKS[device_key] = lock
-
-            async with lock:
+            async with self._transcribe_lock:
                 text = self._transcribe_chunks_sync(wav)
 
             return {"text": text, "words": [], "error": None}
