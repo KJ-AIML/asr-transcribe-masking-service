@@ -7,6 +7,21 @@ from src.config.logs_config import get_logger
 
 logger = get_logger(__name__)
 
+_silero_vad_model = None
+_silero_vad_get_speech_timestamps = None
+
+
+def _load_silero_vad():
+    global _silero_vad_model, _silero_vad_get_speech_timestamps
+    if _silero_vad_model is not None and _silero_vad_get_speech_timestamps is not None:
+        return _silero_vad_model, _silero_vad_get_speech_timestamps
+    import torch
+    model, utils = torch.hub.load("snakers4/silero-vad", "silero_vad", trust_repo=True)
+    (get_speech_timestamps, _, _, _, _) = utils
+    _silero_vad_model = model
+    _silero_vad_get_speech_timestamps = get_speech_timestamps
+    return _silero_vad_model, _silero_vad_get_speech_timestamps
+
 class AudioChunk:
     """Represents a single audio chunk"""
     
@@ -242,6 +257,7 @@ def vad_segment_audio_bytes(
     min_speech_sec: float = 0.3,
     min_silence_sec: float = 0.3,
     max_segment_sec: float = 60.0,
+    use_ml_vad: bool = False,
 ) -> Dict[str, Any]:
     try:
         buffer = io.BytesIO(wav_bytes)
@@ -256,6 +272,37 @@ def vad_segment_audio_bytes(
                 "segments": [],
             }
         total_duration = float(len(y) / sr)
+        if use_ml_vad:
+            try:
+                import torch
+
+                model, get_speech_timestamps = _load_silero_vad()
+                audio_tensor = torch.from_numpy(y).float()
+                if audio_tensor.dim() == 1:
+                    audio_tensor = audio_tensor.unsqueeze(0)
+                speech_ts = get_speech_timestamps(audio_tensor, model, sampling_rate=sr)
+                segments_samples: List[Tuple[int, int]] = []
+                for ts in speech_ts:
+                    start = int(ts.get("start", 0))
+                    end = int(ts.get("end", start))
+                    duration_sec = (end - start) / sr
+                    if duration_sec < min_speech_sec:
+                        continue
+                    if duration_sec <= max_segment_sec:
+                        segments_samples.append((start, end))
+                        continue
+                    max_samples = int(max_segment_sec * sr)
+                    current = start
+                    while current < end:
+                        seg_end = min(current + max_samples, end)
+                        if seg_end > current:
+                            segments_samples.append((current, seg_end))
+                        current = seg_end
+            except Exception as e:
+                logger.error(f"Error in ML VAD, falling back to energy VAD: {e}")
+                segments_samples = []
+        else:
+            segments_samples = []
         intervals = librosa.effects.split(y, top_db=top_db)
         merged: List[Tuple[int, int]] = []
         for start, end in intervals:
@@ -268,7 +315,8 @@ def vad_segment_audio_bytes(
                 merged[-1] = (last_start, end)
             else:
                 merged.append((start, end))
-        segments_samples: List[Tuple[int, int]] = []
+        if not segments_samples:
+            segments_samples = []
         for start, end in merged:
             duration_sec = (end - start) / sr
             if duration_sec < min_speech_sec:

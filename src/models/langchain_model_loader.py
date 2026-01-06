@@ -13,11 +13,16 @@ class LangchainModelLoader:
     def _setup_api_keys(self):
         if settings.OPENAI_API_KEY:
             os.environ["OPENAI_API_KEY"] = settings.OPENAI_API_KEY
+        if settings.OPENAI_MODEL_BASIC:
             os.environ["OPENAI_MODEL_BASIC"] = settings.OPENAI_MODEL_BASIC
+        if settings.OPENAI_MODEL_REASONING:
             os.environ["OPENAI_MODEL_REASONING"] = settings.OPENAI_MODEL_REASONING
+
         if settings.INFERENCE_SERVER_API_KEY:
             os.environ["INFERENCE_SERVER_API_KEY"] = settings.INFERENCE_SERVER_API_KEY
+        if settings.INFERENCE_SERVER_MODEL_BASIC:
             os.environ["INFERENCE_SERVER_MODEL_BASIC"] = settings.INFERENCE_SERVER_MODEL_BASIC
+        if settings.INFERENCE_SERVER_URL:
             os.environ["INFERENCE_SERVER_URL"] = settings.INFERENCE_SERVER_URL
 
     def _get_openai_config(self, **kwargs):

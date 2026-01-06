@@ -15,6 +15,7 @@ import numpy as np
 import librosa
 import soundfile as sf
 from src.config.logs_config import get_logger
+from src.config.settings import settings
 from src.execution.actions.process_choose_model_action import ProcessChooseModelAction
 from src.models.asr_models import ASRModelManager
 from src.models.transcription_model_adapter import TranscriptionModelAdapter
@@ -405,6 +406,7 @@ class ProcessUnifiedStereoAction:
             min_speech_sec=0.5,
             min_silence_sec=0.5,
             max_segment_sec=60.0,
+            use_ml_vad=settings.USE_ML_VAD,
         )
 
         adapter = self._get_adapter_for_channel(channel_label)

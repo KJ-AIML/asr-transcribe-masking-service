@@ -13,6 +13,7 @@ import numpy as np
 import librosa
 import soundfile as sf
 from src.config.logs_config import get_logger
+from src.config.settings import settings
 from src.execution.actions.process_choose_model_action import ProcessChooseModelAction
 from src.models.asr_models import ASRModelManager
 from src.models.transcription_model_adapter import transcription_adapter
@@ -351,6 +352,7 @@ class ProcessWav2JsonAction:
             min_speech_sec=0.3,
             min_silence_sec=0.3,
             max_segment_sec=60.0,
+            use_ml_vad=settings.USE_ML_VAD,
         )
 
         async def process_single_chunk(chunk) -> List[Dict[str, Any]]:

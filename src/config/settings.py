@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     LOG_FILE: str = "src/logs/app.log"
     LOG_AUTO_SETUP: bool = True
 
+    # VAD / audio processing
+    USE_ML_VAD: bool = False
+
     # Server Configuration
     SERVER_PORT: int = 3000
     SERVER_HOST: str = "0.0.0.0"

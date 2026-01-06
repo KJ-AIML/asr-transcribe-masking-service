@@ -6,8 +6,13 @@ services:
       context: .
       dockerfile: Dockerfile
       target: develop
+    command: >
+      uv run uvicorn src.api.main:app
+      --host ${SERVER_HOST:-0.0.0.0}
+      --port ${SERVER_PORT:-3000}
+      --reload
     ports:
-      - "${SERVER_PORT:-3000}:3000"
+      - "${SERVER_PORT:-3000}:${SERVER_PORT:-3000}"
     environment:
       - ENVIRONMENT=development
       - DEBUG=${DEBUG:-true}

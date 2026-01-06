@@ -34,6 +34,9 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 ASR_MODELS_CACHE_DIR = BASE_DIR / "asr_models_cache"
 ASR_MODELS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
+# Safe-mode: per-device async locks to ensure 1 job per GPU at a time
+_DEVICE_LOCKS: Dict[str, asyncio.Lock] = {}
+
 
 class ASRModelBase:
     """Base class for ASR model wrappers."""
@@ -263,6 +266,55 @@ class PathummaASR(ASRModelBase):
         for i in range(0, len(wav), chunk_size):
             yield wav[i:i + chunk_size]
 
+    def _transcribe_chunks_sync(self, wav: torch.Tensor) -> str:
+        results: List[str] = []
+
+        # Ensure correct CUDA device is set for this thread when using GPU
+        if torch.cuda.is_available() and isinstance(self.device, str) and self.device.startswith("cuda"):
+            try:
+                device_index = int(self.device.split(":")[1]) if ":" in self.device else 0
+                torch.cuda.set_device(device_index)
+            except Exception:
+                logger.exception(f"Failed to set CUDA device {self.device} in _transcribe_chunks_sync")
+
+        with torch.no_grad():
+            for chunk in self._chunk_audio(wav):
+                if chunk.numel() == 0:
+                    continue
+
+                inputs = self._processor(
+                    chunk,
+                    sampling_rate=16000,
+                    return_tensors="pt",
+                    return_attention_mask=True,
+                    padding="max_length",
+                    truncation=True,
+                )
+
+                input_features = inputs.input_features.to(device=self.device, dtype=self._wf_model.dtype)
+
+                attention_mask = inputs.attention_mask.to(self.device) if "attention_mask" in inputs else None
+
+                generate_kwargs = {
+                    "attention_mask": attention_mask,
+                    "max_new_tokens": self.max_new_tokens,
+                    "num_beams": self.num_beams,
+                }
+
+                generated = self._wf_model.generate(
+                    input_features,
+                    **generate_kwargs,
+                )
+
+                text = self._processor.batch_decode(generated, skip_special_tokens=True)[0]
+                results.append(text)
+
+                del inputs, input_features, attention_mask, generated
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+        return " ".join(results)
+
     async def transcribe(self, audio_data: bytes) -> Dict[str, Any]:
         await self.ensure_loaded()
 
@@ -274,47 +326,18 @@ class PathummaASR(ASRModelBase):
 
             wav = self._load_audio_tensor(tmp_path)
 
-            results: List[str] = []
+            # Safe mode: ensure only one Pathumma job per device at a time
+            device_key = str(self.device)
+            lock = _DEVICE_LOCKS.get(device_key)
+            if lock is None:
+                lock = asyncio.Lock()
+                _DEVICE_LOCKS[device_key] = lock
 
-            with torch.no_grad():
-                for chunk in self._chunk_audio(wav):
-                    if chunk.numel() == 0:
-                        continue
+            async with lock:
+                loop = asyncio.get_running_loop()
+                text = await loop.run_in_executor(None, self._transcribe_chunks_sync, wav)
 
-                    inputs = self._processor(
-                        chunk,
-                        sampling_rate=16000,
-                        return_tensors="pt",
-                        return_attention_mask=True,
-                        padding="max_length",
-                        truncation=True,
-                    )
-
-                    # cast input_features to model dtype
-                    input_features = inputs.input_features.to(device=self.device, dtype=self._wf_model.dtype)
-
-                    attention_mask = inputs.attention_mask.to(device=self.device) if "attention_mask" in inputs else None
-
-                    generate_kwargs = {
-                        "attention_mask": attention_mask,
-                        "max_new_tokens": self.max_new_tokens,
-                        "num_beams": self.num_beams,
-                    }
-
-                    generated = self._wf_model.generate(
-                        input_features,
-                        **generate_kwargs,
-                    )
-
-                    text = self._processor.batch_decode(generated, skip_special_tokens=True)[0]
-                    results.append(text)
-
-                    # immediate cleanup
-                    del inputs, input_features, attention_mask, generated
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-
-            return {"text": " ".join(results), "words": [], "error": None}
+            return {"text": text, "words": [], "error": None}
 
         except Exception as e:
             logger.exception(f"Pathumma transcription error: {e}")
