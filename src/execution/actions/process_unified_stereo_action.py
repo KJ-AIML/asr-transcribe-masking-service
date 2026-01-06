@@ -17,8 +17,7 @@ import soundfile as sf
 from src.config.logs_config import get_logger
 from src.config.settings import settings
 from src.execution.actions.process_choose_model_action import ProcessChooseModelAction
-from src.models.asr_models import ASRModelManager
-from src.models.transcription_model_adapter import TranscriptionModelAdapter
+from src.models.gpu_worker import GPUWorkerManager
 from src.utils.file.json_utils import save_result_to_json
 from src.utils.audio.chunk_wav_audio import vad_segment_audio_bytes
 
@@ -35,8 +34,18 @@ class ProcessUnifiedStereoAction:
     4. JSON structure generation
     """
     
-    def __init__(self):
+    def __init__(self, use_gpu_workers: bool = True):
+        """
+        Initialize ProcessUnifiedStereoAction.
+        
+        Args:
+            use_gpu_workers: If True, use multiprocessing workers for each GPU
+                            (recommended to avoid CUDA context issues).
+                            If False, use direct ASRModelManager (may cause data races).
+        """
         self.choose_model_action = ProcessChooseModelAction()
+        self.use_gpu_workers = use_gpu_workers
+        self.gpu_worker_manager = None
         self.asr_manager_agent = None
         self.asr_manager_caller = None
         self.adapter_agent = None
@@ -58,6 +67,10 @@ class ProcessUnifiedStereoAction:
         self._init_per_channel_managers()
 
     def _init_per_channel_managers(self) -> None:
+        """
+        Initialize GPU worker managers or direct ASR managers.
+        GPU workers are recommended to avoid CUDA context issues with threads.
+        """
         device_count = 0
         try:
             import torch
@@ -77,13 +90,46 @@ class ProcessUnifiedStereoAction:
             agent_device = "cpu"
             caller_device = "cpu"
 
+        if self.use_gpu_workers:
+            # Use multiprocessing workers - one per GPU
+            # This avoids CUDA context issues with threading
+            if device_count >= 2:
+                logger.info(f"Initializing GPU workers: agent={agent_device}, caller={caller_device}")
+                self.gpu_worker_manager = GPUWorkerManager(
+                    agent_device=agent_device,
+                    caller_device=caller_device,
+                    model_name="pathumma",
+                    max_loaded_models=1,
+                    timeout=300.0
+                )
+            elif device_count == 1:
+                logger.warning(f"Only 1 GPU available, both channels will use {agent_device}")
+                self.gpu_worker_manager = GPUWorkerManager(
+                    agent_device=agent_device,
+                    caller_device=agent_device,
+                    model_name="pathumma",
+                    max_loaded_models=1,
+                    timeout=300.0
+                )
+            else:
+                logger.warning("No GPU available, falling back to direct ASR managers")
+                self.use_gpu_workers = False
+                self._init_direct_managers(agent_device, caller_device)
+        else:
+            # Use direct ASR managers (may cause data races)
+            logger.warning("Using direct ASR managers (may cause CUDA context issues)")
+            self._init_direct_managers(agent_device, caller_device)
+    
+    def _init_direct_managers(self, agent_device: str, caller_device: str) -> None:
+        """Initialize direct ASR managers (fallback mode)."""
+        from src.models.asr_models import ASRModelManager
+        from src.models.transcription_model_adapter import TranscriptionModelAdapter, TyphoonAdapter, WhisperAdapter
+
         self.asr_manager_agent = ASRModelManager(device=agent_device)
         self.asr_manager_caller = ASRModelManager(device=caller_device)
 
         self.adapter_agent = TranscriptionModelAdapter()
         self.adapter_caller = TranscriptionModelAdapter()
-
-        from src.models.transcription_model_adapter import TyphoonAdapter, WhisperAdapter
 
         self.adapter_agent.register_adapter("typhoon", TyphoonAdapter(self.asr_manager_agent))
         self.adapter_agent.register_adapter("pathumma", WhisperAdapter("pathumma", self.asr_manager_agent))
@@ -319,49 +365,74 @@ class ProcessUnifiedStereoAction:
             logger.error(f"Error loading and splitting stereo audio: {e}")
             raise
     
-    def _get_adapter_for_channel(self, channel_label: str) -> TranscriptionModelAdapter:
-        if channel_label == self.LEFT_CHANNEL_LABEL:
+    def _get_adapter_for_channel(self, channel_label: str):
+        if self.use_gpu_workers:
+            return self.gpu_worker_manager
+        else:
+            if channel_label == self.LEFT_CHANNEL_LABEL:
+                return self.adapter_agent
+            if channel_label == self.RIGHT_CHANNEL_LABEL:
+                return self.adapter_caller
             return self.adapter_agent
-        if channel_label == self.RIGHT_CHANNEL_LABEL:
-            return self.adapter_caller
-        return self.adapter_agent
 
     async def _transcribe_channel(self, channel_data: Dict[str, Any], model_name: str, channel_label: str, semaphore: Optional[asyncio.Semaphore] = None) -> Dict[str, Any]:
-        """Transcribe a single channel using model adapter"""
+        """Transcribe a single channel using model adapter or GPU worker"""
         logger.info(f"Transcribing {channel_label} channel with {model_name}...")
 
         try:
             audio_bytes = channel_data.get("audio_bytes")
             if not audio_bytes:
                 raise ValueError(f"No audio bytes found for {channel_label} channel")
-            adapter = self._get_adapter_for_channel(channel_label)
-
-            if model_name in ["pathumma", "pathumma_noise"]:
-                return await self._transcribe_channel_chunked(
-                    audio_bytes,
-                    channel_data,
-                    model_name,
-                    channel_label,
-                    semaphore,
-                )
-
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
-                tmp_file.write(audio_bytes)
-                channel_audio_path = tmp_file.name
-            try:
-                result = await adapter.transcribe_with_model(
-                    audio_path=channel_audio_path,
-                    model_name=model_name,
-                    language="th",
-                )
+            
+            if self.use_gpu_workers:
+                # Use GPU worker for transcription
+                if channel_label == self.LEFT_CHANNEL_LABEL:
+                    result_payload = await self.gpu_worker_manager.transcribe_agent(audio_bytes)
+                else:
+                    result_payload = await self.gpu_worker_manager.transcribe_caller(audio_bytes)
+                
+                if result_payload.get("ok"):
+                    result = result_payload["result"]
+                else:
+                    error_msg = result_payload.get("error", "Unknown error")
+                    logger.error(f"GPU worker transcription error: {error_msg}")
+                    result = {"text": "", "words": [], "error": error_msg}
+                
                 result["channel"] = channel_label
                 result["speaker"] = channel_data.get("speaker", channel_label)
                 result["duration"] = channel_data.get("duration", 0)
                 logger.info(f"Channel {channel_label} transcription completed")
                 return result
-            finally:
-                if os.path.exists(channel_audio_path):
-                    os.unlink(channel_audio_path)
+            else:
+                # Use direct adapter (fallback mode)
+                adapter = self._get_adapter_for_channel(channel_label)
+
+                if model_name in ["pathumma", "pathumma_noise"]:
+                    return await self._transcribe_channel_chunked(
+                        audio_bytes,
+                        channel_data,
+                        model_name,
+                        channel_label,
+                        semaphore,
+                    )
+
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
+                    tmp_file.write(audio_bytes)
+                    channel_audio_path = tmp_file.name
+                try:
+                    result = await adapter.transcribe_with_model(
+                        audio_path=channel_audio_path,
+                        model_name=model_name,
+                        language="th",
+                    )
+                    result["channel"] = channel_label
+                    result["speaker"] = channel_data.get("speaker", channel_label)
+                    result["duration"] = channel_data.get("duration", 0)
+                    logger.info(f"Channel {channel_label} transcription completed")
+                    return result
+                finally:
+                    if os.path.exists(channel_audio_path):
+                        os.unlink(channel_audio_path)
             
         except Exception as e:
             logger.error(f"Error transcribing {channel_label} channel: {e}")
@@ -414,18 +485,34 @@ class ProcessUnifiedStereoAction:
         async def process_single_chunk(chunk) -> List[Dict[str, Any]]:
             async with semaphore:
                 chunk_bytes = chunk.to_bytes()
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
-                    tmp_file.write(chunk_bytes)
-                    chunk_audio_path = tmp_file.name
-                try:
-                    chunk_result = await adapter.transcribe_with_model(
-                        audio_path=chunk_audio_path,
-                        model_name=model_name,
-                        language="th",
-                    )
-                finally:
-                    if os.path.exists(chunk_audio_path):
-                        os.unlink(chunk_audio_path)
+                
+                if self.use_gpu_workers:
+                    # Use GPU worker for chunk transcription
+                    if channel_label == self.LEFT_CHANNEL_LABEL:
+                        result_payload = await self.gpu_worker_manager.transcribe_agent(chunk_bytes)
+                    else:
+                        result_payload = await self.gpu_worker_manager.transcribe_caller(chunk_bytes)
+                    
+                    if result_payload.get("ok"):
+                        chunk_result = result_payload["result"]
+                    else:
+                        error_msg = result_payload.get("error", "Unknown error")
+                        logger.error(f"GPU worker chunk transcription error: {error_msg}")
+                        chunk_result = {"words": [], "error": error_msg}
+                else:
+                    # Use direct adapter (fallback mode)
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
+                        tmp_file.write(chunk_bytes)
+                        chunk_audio_path = tmp_file.name
+                    try:
+                        chunk_result = await adapter.transcribe_with_model(
+                            audio_path=chunk_audio_path,
+                            model_name=model_name,
+                            language="th",
+                        )
+                    finally:
+                        if os.path.exists(chunk_audio_path):
+                            os.unlink(chunk_audio_path)
 
                 words = chunk_result.get("words", [])
                 if not words:
@@ -647,3 +734,36 @@ class ProcessUnifiedStereoAction:
                 lines.append(f"[{channel}]: {text}")
         
         return "\n".join(lines)
+    
+    def shutdown(self):
+        """
+        Cleanup resources and shutdown GPU workers if initialized.
+        Call this when the action is no longer needed to properly release GPU resources.
+        """
+        if self.gpu_worker_manager is not None:
+            try:
+                self.gpu_worker_manager.shutdown()
+                logger.info("GPU workers shutdown successfully")
+            except Exception as e:
+                logger.error(f"Error shutting down GPU workers: {e}")
+        
+        if self.asr_manager_agent is not None:
+            try:
+                self.asr_manager_agent.unload_models()
+            except Exception:
+                pass
+        
+        if self.asr_manager_caller is not None:
+            try:
+                self.asr_manager_caller.unload_models()
+            except Exception:
+                pass
+        
+        logger.info("ProcessUnifiedStereoAction cleanup completed")
+    
+    def __del__(self):
+        """Cleanup on deletion."""
+        try:
+            self.shutdown()
+        except Exception:
+            pass
