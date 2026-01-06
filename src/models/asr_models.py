@@ -34,6 +34,10 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 ASR_MODELS_CACHE_DIR = BASE_DIR / "asr_models_cache"
 ASR_MODELS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
+# Device-specific locks for thread-safe CUDA operations
+# Each device gets its own lock, allowing parallel processing across different GPUs
+_DEVICE_LOCKS: Dict[str, asyncio.Lock] = {}
+
 
 class ASRModelBase:
     """Base class for ASR model wrappers."""
@@ -326,9 +330,15 @@ class PathummaASR(ASRModelBase):
 
             wav = self._load_audio_tensor(tmp_path)
 
-            # Use instance-level lock for serialization (no executor needed)
-            # This ensures thread-safety by serializing CUDA operations
-            async with self._load_lock:
+            # Use device-specific lock for thread-safe CUDA operations
+            # This allows parallel processing across different GPUs (e.g., cuda:0 and cuda:1)
+            # while serializing operations on the same device
+            device_key = str(self.device)
+            if device_key not in _DEVICE_LOCKS:
+                _DEVICE_LOCKS[device_key] = asyncio.Lock()
+            
+            device_lock = _DEVICE_LOCKS[device_key]
+            async with device_lock:
                 text = self._transcribe_chunks_sync(wav)
 
             return {"text": text, "words": [], "error": None}
