@@ -17,9 +17,11 @@ from src.execution.actions.process_compare_chunk_wav_files_action import (
 )
 from src.models.asr_models import ASRModelManager
 from src.models.transcription_models import ChunkTranscription, transcription_memory
-from src.models.transcription_model_adapter import TranscriptionModelAdapter
-from src.models.adapters.typhoon_adapter import TyphoonAdapter
-from src.models.adapters.whisper_adapter import WhisperAdapter
+from src.models.transcription_model_adapter import (
+    TranscriptionModelAdapter,
+    TyphoonAdapter,
+    WhisperAdapter,
+)
 from src.utils.audio.chunk_wav_audio import process_chunks_in_batches
 
 logger = get_logger(__name__)

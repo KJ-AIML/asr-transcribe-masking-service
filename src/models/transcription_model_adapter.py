@@ -2,9 +2,7 @@
 Model Adapter for handling different ASR models (Typhoon, Pathumma, Pathumma_noise)
 Handles the differences between NeMo (Typhoon) and Whisper (Pathumma) models
 """
-from typing import Dict, Any, List, Optional
-import asyncio
-import logging
+from typing import Dict, Any, List
 from abc import ABC, abstractmethod
 from src.config.logs_config import get_logger
 
