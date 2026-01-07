@@ -340,7 +340,9 @@ class ProcessUnifiedStereoAction:
             if not audio_bytes:
                 raise ValueError(f"No audio bytes found for {channel_label} channel")
             adapter = self._get_adapter_for_channel(channel_label)
-            logger.info(f"Using adapter for {channel_label}: {type(adapter).__name__}, manager device: {adapter.model_manager.device} at {time.time():.2f}")
+            actual_adapter = adapter.get_adapter(model_name)
+            device = actual_adapter.asr_manager.device
+            logger.info(f"Using adapter for {channel_label}: {type(adapter).__name__}, actual_adapter: {type(actual_adapter).__name__}, manager device: {device} at {time.time():.2f}")
 
             if model_name in ["pathumma", "pathumma_noise"]:
                 return await self._transcribe_channel_chunked(

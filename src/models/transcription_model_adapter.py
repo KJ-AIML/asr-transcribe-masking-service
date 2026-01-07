@@ -230,8 +230,9 @@ class TranscriptionModelAdapter:
     Factory class for creating appropriate transcription adapters
     """
     
-    def __init__(self):
+    def __init__(self, model_manager=None):
         self.adapters = {}
+        self.model_manager = model_manager
         
     def register_adapter(self, model_name: str, adapter: BaseTranscriptionAdapter):
         """Register a model adapter"""
