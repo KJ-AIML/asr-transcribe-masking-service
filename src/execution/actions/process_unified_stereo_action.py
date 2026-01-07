@@ -242,9 +242,7 @@ class ProcessUnifiedStereoAction:
                 )
             )
 
-            logger.info(f"Tasks created at {time.time():.2f}, sleeping to allow scheduling...")
-            await asyncio.sleep(0.01)
-            logger.info(f"Starting gather at {time.time():.2f}...")
+            logger.info(f"Tasks created, waiting for tasks to start at {time.time():.2f}...")
             left_result, right_result = await asyncio.gather(left_task, right_task)
             logger.info(f"Gather completed at {time.time():.2f}, total time: {time.time() - gather_start:.2f}s")
             logger.info("Both channel transcriptions completed")
@@ -416,7 +414,8 @@ class ProcessUnifiedStereoAction:
             semaphore = asyncio.Semaphore(self.max_concurrent_chunks)
 
         logger.info(f"{channel_label}: Starting VAD segmentation at {time.time():.2f}...")
-        segment_info = vad_segment_audio_bytes(
+        segment_info = await asyncio.to_thread(
+            vad_segment_audio_bytes,
             wav_bytes=audio_bytes,
             target_sr=16_000,
             top_db=30.0,
