@@ -1,10 +1,14 @@
 import asyncio
 import gc
 import os
+import time
+import tempfile
+import multiprocessing as mp
 from datetime import datetime
 from typing import Any, Dict, List
 
 import psutil
+import torch
 
 from src.config.logs_config import get_logger
 from src.execution.actions.process_choose_model_action import ProcessChooseModelAction
@@ -13,9 +17,62 @@ from src.execution.actions.process_compare_chunk_wav_files_action import (
 )
 from src.models.asr_models import ASRModelManager
 from src.models.transcription_models import ChunkTranscription, transcription_memory
+from src.models.transcription_model_adapter import TranscriptionModelAdapter
+from src.models.adapters.typhoon_adapter import TyphoonAdapter
+from src.models.adapters.whisper_adapter import WhisperAdapter
 from src.utils.audio.chunk_wav_audio import process_chunks_in_batches
 
 logger = get_logger(__name__)
+
+def _mp_worker_transcribe_chunk(
+    chunk_bytes: bytes,
+    chunk_index: int,
+    model_names: List[str],
+    device: str,
+    result_queue: mp.Queue,
+) -> None:
+    """Multiprocessing worker function for transcribing a single chunk"""
+    import asyncio
+    
+    start_time = time.time()
+    
+    try:
+        torch.cuda.set_device(device)
+        
+        asr_manager = ASRModelManager(device=device)
+        adapter = TranscriptionModelAdapter()
+        adapter.register_adapter("typhoon", TyphoonAdapter(asr_manager))
+        adapter.register_adapter("pathumma", WhisperAdapter("pathumma", asr_manager))
+        adapter.register_adapter("pathumma_noise", WhisperAdapter("pathumma_noise", asr_manager))
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            tmp.write(chunk_bytes)
+            audio_path = tmp.name
+        
+        try:
+            transcriptions = {}
+            processing_times = {}
+            
+            for model_name in model_names:
+                model_start = time.time()
+                
+                result = asyncio.run(adapter.transcribe_with_model(
+                    audio_path=audio_path,
+                    model_name=model_name,
+                    language="th",
+                ))
+                
+                transcriptions[model_name] = {"text": result.get("text", "")}
+                processing_times[model_name] = (time.time() - model_start) * 1000
+            
+            result_queue.put((chunk_index, transcriptions, processing_times, None))
+            
+        finally:
+            if os.path.exists(audio_path):
+                os.unlink(audio_path)
+            
+    except Exception as e:
+        result_queue.put((chunk_index, {}, {}, str(e)))
 
 
 class ProcessWav2FileAction:
@@ -27,6 +84,13 @@ class ProcessWav2FileAction:
         self.choose_model_action = ProcessChooseModelAction()
         self.max_concurrent_chunks = 9
         self.max_retries = 3
+        
+        # Set multiprocessing start method for CUDA compatibility
+        try:
+            mp.set_start_method("spawn", force=True)
+            logger.info("Multiprocessing start method set to 'spawn'")
+        except RuntimeError as e:
+            logger.debug(f"Multiprocessing start method already set: {e}")
 
 
     async def _process_chunk_batch_with_transcription(
@@ -35,24 +99,77 @@ class ProcessWav2FileAction:
         chunk_meta_list: List[Dict[str, Any]],
         session_id: str,
     ) -> List[Dict[str, Any]]:
-        """Process a batch of audio chunks with transcription"""
+        """Process a batch of audio chunks with transcription using multiprocessing"""
         self._check_memory_usage()
         batch_results = []
+        
+        # Detect available GPUs
+        gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        if gpu_count == 0:
+            logger.warning("No GPU available, falling back to CPU")
+            devices = ["cpu"]
+        else:
+            devices = [f"cuda:{i}" for i in range(gpu_count)]
+        
+        logger.info(f"Using {len(devices)} devices for multiprocessing: {devices}")
 
         try:
-            # Transcribe chunks with all ASR models
-            transcription_results = await self.asr_manager.transcribe_chunks_parallel(
-                audio_chunks=chunk_bytes_list,
-                model_names=["typhoon", "pathumma", "pathumma_noise"],
-            )
+            # Use multiprocessing for parallel chunk transcription
+            model_names = ["typhoon", "pathumma", "pathumma_noise"]
+            result_queue = mp.Queue()
+            processes = []
+            
+            # Create processes for each chunk
+            for i, chunk_bytes in enumerate(chunk_bytes_list):
+                chunk_meta = chunk_meta_list[i]
+                chunk_index = chunk_meta["chunk_index"]
+                
+                # Assign device round-robin
+                device = devices[i % len(devices)]
+                
+                process = mp.Process(
+                    target=_mp_worker_transcribe_chunk,
+                    args=(chunk_bytes, chunk_index, model_names, device, result_queue)
+                )
+                processes.append(process)
+            
+            # Start all processes
+            process_start = time.time()
+            for process in processes:
+                process.start()
+            
+            # Wait for all processes to complete
+            for process in processes:
+                process.join()
+            
+            total_process_time = time.time() - process_start
+            logger.info(f"Multiprocessing batch completed in {total_process_time:.2f}s")
+            
+            # Collect results from queue
+            results_dict = {}
+            while not result_queue.empty():
+                chunk_index, transcriptions, processing_times, error = result_queue.get()
+                results_dict[chunk_index] = {
+                    "transcriptions": transcriptions,
+                    "processing_times_ms": processing_times,
+                    "error": error,
+                }
 
             # Update session with transcription results
             session = transcription_memory.get_session(session_id)
             if session:
-                for i, (chunk_meta, trans_result) in enumerate(
-                    zip(chunk_meta_list, transcription_results)
-                ):
+                for i, chunk_meta in enumerate(chunk_meta_list):
                     chunk_index = chunk_meta["chunk_index"]
+                    
+                    if chunk_index not in results_dict:
+                        logger.warning(f"No result for chunk {chunk_index}")
+                        continue
+                    
+                    trans_result = results_dict[chunk_index]
+                    
+                    if trans_result["error"]:
+                        logger.error(f"Error transcribing chunk {chunk_index}: {trans_result['error']}")
+                        continue
 
                     # Create/update chunk transcription
                     chunk_transcription = ChunkTranscription(
