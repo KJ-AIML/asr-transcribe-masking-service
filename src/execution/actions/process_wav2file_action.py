@@ -21,7 +21,7 @@ from src.models.transcription_model_adapter import (
     TranscriptionModelAdapter,
     TyphoonAdapter,
     WhisperAdapter,
-)
+) 
 from src.utils.audio.chunk_wav_audio import process_chunks_in_batches
 
 logger = get_logger(__name__)
