@@ -171,23 +171,13 @@ class ProcessWav2FileAction:
         return batch_results
 
     def _check_memory_usage(self):
-        """Check current memory usage and log warnings if approaching limits"""
+        """Check current memory usage (disabled warning logs)"""
         try:
-            # Check RAM usage
             memory_info = self.process.memory_info()
             memory_mb = memory_info.rss / 1024 / 1024
 
-            if memory_mb > self.max_memory_mb * 0.8:
-                logger.warning(
-                    f"High RAM usage detected: {memory_mb:.1f}MB / {self.max_memory_mb}MB"
-                )
-            elif memory_mb > self.max_memory_mb * 0.9:
-                logger.error(
-                    f"Critical RAM usage: {memory_mb:.1f}MB / {self.max_memory_mb}MB"
-                )
-
         except Exception as e:
-            logger.warning(f"Could not check memory usage: {e}")
+            pass
 
     def _cleanup_memory(self):
         """Force garbage collection and memory cleanup"""
