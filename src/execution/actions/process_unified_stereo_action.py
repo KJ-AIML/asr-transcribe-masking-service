@@ -38,7 +38,7 @@ def _mp_worker_transcribe_channel(
 ) -> None:
     """
     Multiprocessing worker function for transcribing a single channel
-    Each process runs on its own GPU device
+    Each process runs on its own GPU device (or CPU)
     Results are sent back via result_queue
     """
     import torch
@@ -47,8 +47,11 @@ def _mp_worker_transcribe_channel(
     print(f"[MP Worker {device}] Starting transcription for {channel_label} at {channel_start:.2f}")
     
     try:
-        torch.cuda.set_device(device)
-        print(f"[MP Worker {device}] Set device to {device}")
+        if device != "cpu":
+            torch.cuda.set_device(device)
+            print(f"[MP Worker {device}] Set device to {device}")
+        else:
+            print(f"[MP Worker {device}] Using CPU mode")
         
         asr_manager = ASRModelManager(device=device)
         adapter = TranscriptionModelAdapter()
@@ -403,19 +406,34 @@ class ProcessUnifiedStereoAction:
             p1.start()
             
             print(f"[Main] Processes started, waiting for results...")
-            p0.join()
-            p1.join()
             
             left_result = None
             right_result = None
+            results_received = 0
+            max_timeout = 1800
             
-            while not result_queue.empty():
-                channel_label, result = result_queue.get()
-                print(f"[Main] Received result for {channel_label}")
-                if channel_label == self.LEFT_CHANNEL_LABEL:
-                    left_result = result
-                elif channel_label == self.RIGHT_CHANNEL_LABEL:
-                    right_result = result
+            while results_received < 2:
+                try:
+                    channel_label, result = result_queue.get(timeout=max_timeout)
+                    print(f"[Main] Received result for {channel_label}")
+                    if channel_label == self.LEFT_CHANNEL_LABEL:
+                        left_result = result
+                    elif channel_label == self.RIGHT_CHANNEL_LABEL:
+                        right_result = result
+                    results_received += 1
+                except Exception as e:
+                    logger.error(f"[Main] Timeout waiting for results from queue: {e}")
+                    break
+            
+            p0.join(timeout=10)
+            p1.join(timeout=10)
+            
+            if p0.is_alive():
+                logger.warning("[Main] Left process still alive after join, terminating...")
+                p0.terminate()
+            if p1.is_alive():
+                logger.warning("[Main] Right process still alive after join, terminating...")
+                p1.terminate()
             
             if left_result is None:
                 left_result = {
@@ -581,21 +599,74 @@ class ProcessUnifiedStereoAction:
             "end": end,
             "text": text,
             "speaker": speaker,
+            "channel": speaker,
             "words": sorted_words
         }
     
     def _generate_json_structure(self, transcription_result: Dict[str, Any], filename: str) -> Dict[str, Any]:
-        """Generate JSON structure from transcription results"""
+        """
+        Generate JSON structure matching sample_input.json format
+        """
         segments = transcription_result.get("segments", [])
         words = transcription_result.get("words", [])
-        duration = transcription_result.get("duration", 0)
+        
+        # Generate formatted text
+        formatted_text = self._generate_formatted_text(segments)
+        simple_text = self._generate_simple_text(segments)
         
         return {
-            "filename": filename,
-            "duration": duration,
-            "language": transcription_result.get("language", "th"),
-            "segments": segments,
-            "word_count": len(words),
-            "segment_count": len(segments),
-            "generated_at": datetime.now().isoformat()
+                "text": formatted_text,
+                "simple_text": simple_text,
+                "segments": segments,
+                "words": words,
+                "metadata": {
+                    "is_stereo_merged": True,
+                    "language": transcription_result.get("language", "th"),
+                    "duration": transcription_result.get("duration", 0),
+                    "processing_info": {
+                        "start_time": time.time(),
+                        "correction_passes": 0,
+                        "issues_detected": 0,
+                        "issues_fixed": 0,
+                        "rerun_performed": False,
+                        "end_time": time.time(),
+                        "total_duration": 0
+                    },
+                    "audio_info": {
+                        "channels": 2,
+                        "codec_name": "pcm_s16le",
+                        "sample_rate": 16000,
+                        "duration": transcription_result.get("duration", 0),
+                        "format_name": "wav",
+                        "size": "0"
+                    },
+                    "generated_at": datetime.now().isoformat(),
+                    "format_version": "1.0"
+                }
         }
+    
+    def _generate_formatted_text(self, segments: List[Dict[str, Any]]) -> str:
+        """Generate formatted text with timestamps and speaker labels"""
+        lines = []
+        for segment in segments:
+            start = segment.get("start", 0)
+            end = segment.get("end", 0)
+            text = segment.get("text", "").strip()
+            channel = segment.get("channel", "Unknown")
+            
+            if text:
+                lines.append(f"[{start:.2f} --> {end:.2f}] [{channel}]: {text}")
+        
+        return "\n".join(lines)
+    
+    def _generate_simple_text(self, segments: List[Dict[str, Any]]) -> str:
+        """Generate simple text with speaker labels only"""
+        lines = []
+        for segment in segments:
+            text = segment.get("text", "").strip()
+            channel = segment.get("channel", "Unknown")
+            
+            if text:
+                lines.append(f"[{channel}]: {text}")
+        
+        return "\n".join(lines)

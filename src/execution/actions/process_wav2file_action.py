@@ -26,55 +26,109 @@ from src.utils.audio.chunk_wav_audio import process_chunks_in_batches
 
 logger = get_logger(__name__)
 
-def _mp_worker_transcribe_chunk(
-    chunk_bytes: bytes,
-    chunk_index: int,
-    model_names: List[str],
+def _gpu_worker_process(
     device: str,
+    assigned_models: List[str],
+    task_queue: mp.Queue,
     result_queue: mp.Queue,
 ) -> None:
-    """Multiprocessing worker function for transcribing a single chunk"""
+    """
+    Persistent GPU worker process for transcribing chunks
+    
+    Each worker:
+    - Runs on a specific GPU device (or CPU)
+    - Loads only assigned models (saves VRAM)
+    - Continuously processes chunks from task_queue
+    - Sends results to result_queue
+    """
     import asyncio
     
-    start_time = time.time()
+    worker_start = time.time()
+    print(f"[GPU Worker {device}] Starting at {worker_start:.2f}")
+    print(f"[GPU Worker {device}] Assigned models: {assigned_models}")
     
     try:
-        torch.cuda.set_device(device)
+        if device != "cpu":
+            torch.cuda.set_device(device)
+            print(f"[GPU Worker {device}] Set device to {device}")
+        else:
+            print(f"[GPU Worker {device}] Using CPU mode")
         
         asr_manager = ASRModelManager(device=device)
         adapter = TranscriptionModelAdapter()
-        adapter.register_adapter("typhoon", TyphoonAdapter(asr_manager))
-        adapter.register_adapter("pathumma", WhisperAdapter("pathumma", asr_manager))
-        adapter.register_adapter("pathumma_noise", WhisperAdapter("pathumma_noise", asr_manager))
         
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-            tmp.write(chunk_bytes)
-            audio_path = tmp.name
+        for model_name in assigned_models:
+            if model_name == "typhoon":
+                adapter.register_adapter("typhoon", TyphoonAdapter(asr_manager))
+            elif model_name == "pathumma":
+                adapter.register_adapter("pathumma", WhisperAdapter("pathumma", asr_manager))
+            elif model_name == "pathumma_noise":
+                adapter.register_adapter("pathumma_noise", WhisperAdapter("pathumma_noise", asr_manager))
         
-        try:
-            transcriptions = {}
-            processing_times = {}
+        print(f"[GPU Worker {device}] Loaded models: {assigned_models}")
+        print(f"[GPU Worker {device}] Ready to process tasks")
+        
+        chunks_processed = 0
+        
+        while True:
+            task = task_queue.get()
             
-            for model_name in model_names:
-                model_start = time.time()
+            if task is None:
+                print(f"[GPU Worker {device}] Received stop signal")
+                break
+            
+            chunk_index, chunk_bytes, model_names = task
+            chunk_start = time.time()
+            print(f"[GPU Worker {device}] Processing chunk {chunk_index}")
+            
+            try:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+                    tmp.write(chunk_bytes)
+                    audio_path = tmp.name
                 
-                result = asyncio.run(adapter.transcribe_with_model(
-                    audio_path=audio_path,
-                    model_name=model_name,
-                    language="th",
-                ))
+                try:
+                    transcriptions = {}
+                    processing_times = {}
+                    
+                    for model_name in model_names:
+                        if model_name not in assigned_models:
+                            continue
+                        
+                        model_start = time.time()
+                        
+                        result = asyncio.run(adapter.transcribe_with_model(
+                            audio_path=audio_path,
+                            model_name=model_name,
+                            language="th",
+                        ))
+                        
+                        transcriptions[model_name] = {"text": result.get("text", "")}
+                        processing_times[model_name] = (time.time() - model_start) * 1000
+                    
+                    result_queue.put((chunk_index, transcriptions, processing_times, None))
+                    chunks_processed += 1
+                    
+                    chunk_time = time.time() - chunk_start
+                    print(f"[GPU Worker {device}] Chunk {chunk_index} done in {chunk_time:.2f}s")
+                    
+                finally:
+                    if os.path.exists(audio_path):
+                        os.unlink(audio_path)
                 
-                transcriptions[model_name] = {"text": result.get("text", "")}
-                processing_times[model_name] = (time.time() - model_start) * 1000
-            
-            result_queue.put((chunk_index, transcriptions, processing_times, None))
-            
-        finally:
-            if os.path.exists(audio_path):
-                os.unlink(audio_path)
-            
+            except Exception as e:
+                print(f"[GPU Worker {device}] Error processing chunk {chunk_index}: {e}")
+                import traceback
+                traceback.print_exc()
+                result_queue.put((chunk_index, {}, {}, str(e)))
+        
+        total_time = time.time() - worker_start
+        print(f"[GPU Worker {device}] Stopping. Processed {chunks_processed} chunks in {total_time:.2f}s")
+        
     except Exception as e:
-        result_queue.put((chunk_index, {}, {}, str(e)))
+        print(f"[GPU Worker {device}] Fatal error: {e}")
+        import traceback
+        traceback.print_exc()
+        result_queue.put((-1, {}, {}, f"Worker error: {str(e)}"))
 
 
 class ProcessWav2FileAction:
@@ -101,7 +155,7 @@ class ProcessWav2FileAction:
         chunk_meta_list: List[Dict[str, Any]],
         session_id: str,
     ) -> List[Dict[str, Any]]:
-        """Process a batch of audio chunks with transcription using multiprocessing"""
+        """Process a batch of audio chunks with transcription using persistent GPU workers"""
         self._check_memory_usage()
         batch_results = []
         
@@ -110,52 +164,108 @@ class ProcessWav2FileAction:
         if gpu_count == 0:
             logger.warning("No GPU available, falling back to CPU")
             devices = ["cpu"]
+            gpu_model_mapping = {"cpu": ["typhoon", "pathumma", "pathumma_noise"]}
         else:
             devices = [f"cuda:{i}" for i in range(gpu_count)]
-        
-        logger.info(f"Using {len(devices)} devices for multiprocessing: {devices}")
-
-        try:
-            # Use multiprocessing for parallel chunk transcription
-            model_names = ["typhoon", "pathumma", "pathumma_noise"]
-            result_queue = mp.Queue()
-            processes = []
+            gpu_model_mapping = {}
             
-            # Create processes for each chunk
+            # Model-per-GPU assignment (Option C)
+            # GPU 0: typhoon + pathumma_noise
+            # GPU 1: pathumma
+            if len(devices) >= 2:
+                gpu_model_mapping["cuda:0"] = ["typhoon", "pathumma_noise"]
+                gpu_model_mapping["cuda:1"] = ["pathumma"]
+                logger.info("Using 2-GPU model-per-GPU architecture:")
+                logger.info("  - cuda:0: typhoon, pathumma_noise")
+                logger.info("  - cuda:1: pathumma")
+            elif len(devices) == 1:
+                gpu_model_mapping["cuda:0"] = ["typhoon", "pathumma", "pathumma_noise"]
+                logger.info("Using single GPU with all models")
+        
+        logger.info(f"Using {len(devices)} devices: {devices}")
+        
+        all_model_names = ["typhoon", "pathumma", "pathumma_noise"]
+        
+        try:
+            task_queue = mp.Queue()
+            result_queue = mp.Queue()
+            workers = []
+            
+            # Start persistent GPU workers
+            worker_start = time.time()
+            for device in devices:
+                assigned_models = gpu_model_mapping.get(device, all_model_names)
+                
+                worker = mp.Process(
+                    target=_gpu_worker_process,
+                    args=(device, assigned_models, task_queue, result_queue)
+                )
+                worker.start()
+                workers.append(worker)
+                logger.info(f"Started GPU worker on {device} with models: {assigned_models}")
+            
+            logger.info(f"All {len(workers)} GPU workers started in {time.time() - worker_start:.2f}s")
+            
+            # Distribute chunks to workers
+            distribution_start = time.time()
             for i, chunk_bytes in enumerate(chunk_bytes_list):
                 chunk_meta = chunk_meta_list[i]
                 chunk_index = chunk_meta["chunk_index"]
                 
-                # Assign device round-robin
+                # Round-robin device assignment
                 device = devices[i % len(devices)]
                 
-                process = mp.Process(
-                    target=_mp_worker_transcribe_chunk,
-                    args=(chunk_bytes, chunk_index, model_names, device, result_queue)
-                )
-                processes.append(process)
+                # Submit task
+                task = (chunk_index, chunk_bytes, all_model_names)
+                task_queue.put(task)
             
-            # Start all processes
-            process_start = time.time()
-            for process in processes:
-                process.start()
+            # Send stop signals to workers
+            for _ in range(len(workers)):
+                task_queue.put(None)
             
-            # Wait for all processes to complete
-            for process in processes:
-                process.join()
+            logger.info(f"Distributed {len(chunk_bytes_list)} chunks in {time.time() - distribution_start:.2f}s")
             
-            total_process_time = time.time() - process_start
-            logger.info(f"Multiprocessing batch completed in {total_process_time:.2f}s")
+            # Wait for all workers to complete
+            for worker in workers:
+                worker.join()
+            
+            total_time = time.time() - worker_start
+            logger.info(f"GPU workers completed in {total_time:.2f}s")
             
             # Collect results from queue
             results_dict = {}
-            while not result_queue.empty():
-                chunk_index, transcriptions, processing_times, error = result_queue.get()
-                results_dict[chunk_index] = {
-                    "transcriptions": transcriptions,
-                    "processing_times_ms": processing_times,
-                    "error": error,
-                }
+            expected_chunks = len(chunk_bytes_list)
+            collected_count = 0
+            
+            while collected_count < expected_chunks:
+                try:
+                    chunk_index, transcriptions, processing_times, error = result_queue.get(timeout=30)
+                    
+                    if chunk_index == -1:
+                        logger.error(f"Worker error: {error}")
+                        continue
+                    
+                    # Merge results from different workers for the same chunk
+                    if chunk_index not in results_dict:
+                        results_dict[chunk_index] = {
+                            "transcriptions": {},
+                            "processing_times_ms": {},
+                            "error": None,
+                        }
+                    
+                    # Merge transcriptions and processing times
+                    results_dict[chunk_index]["transcriptions"].update(transcriptions)
+                    results_dict[chunk_index]["processing_times_ms"].update(processing_times)
+                    results_dict[chunk_index]["error"] = error
+                    
+                    collected_count += 1
+                    logger.info(f"Collected result for chunk {chunk_index} ({collected_count}/{expected_chunks})")
+                    
+                except Exception as e:
+                    logger.error(f"Error collecting results: {e}")
+                    break
+            
+            logger.info(f"Collected all {collected_count} chunk results")
 
             # Update session with transcription results
             session = transcription_memory.get_session(session_id)
