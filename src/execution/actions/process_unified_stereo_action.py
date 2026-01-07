@@ -239,7 +239,9 @@ class ProcessUnifiedStereoAction:
                 )
             )
 
-            logger.info("Tasks created, awaiting gather...")
+            logger.info("Tasks created, relinquishing control...")
+            await asyncio.sleep(0)
+            logger.info("Tasks started, awaiting gather...")
             left_result, right_result = await asyncio.gather(left_task, right_task)
             logger.info("Both channel transcriptions completed")
             
