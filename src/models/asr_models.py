@@ -225,6 +225,7 @@ class PathummaASR(ASRModelBase):
         if torch.cuda.is_available() and "cuda" in self.device:
             try:
                 self._wf_model = self._wf_model.to(self.device)
+                logger.info(f"Pathumma model moved to device: {self.device}")
             except Exception:
                 logger.exception("Failed to move Pathumma model to device; continuing with CPU (may be slow)")
 
@@ -241,6 +242,11 @@ class PathummaASR(ASRModelBase):
                     logger.exception("Failed to set forced_decoder_ids on generation_config")
         except Exception:
             logger.debug("Failed to set generation_config - fine.")
+
+        # Verify model is on expected device
+        if self._wf_model is not None:
+            actual_device = next(self._wf_model.parameters()).device
+            logger.info(f"Pathumma model verified on device: {actual_device}")
 
         self._model_loaded = True
         logger.info("Pathumma model loaded (transformers style)")
@@ -284,9 +290,11 @@ class PathummaASR(ASRModelBase):
                     truncation=True,
                 )
 
-                input_features = inputs.input_features.to(device=self.device, dtype=self._wf_model.dtype)
+                # Verify and ensure model and input tensors are on the same device
+                model_device = next(self._wf_model.parameters()).device
+                input_features = inputs.input_features.to(device=model_device, dtype=self._wf_model.dtype)
 
-                attention_mask = inputs.attention_mask.to(self.device) if "attention_mask" in inputs else None
+                attention_mask = inputs.attention_mask.to(model_device) if "attention_mask" in inputs else None
 
                 generate_kwargs = {
                     "attention_mask": attention_mask,
@@ -309,7 +317,9 @@ class PathummaASR(ASRModelBase):
         return " ".join(results)
 
     async def transcribe(self, audio_data: bytes) -> Dict[str, Any]:
+        logger.info(f"PathummaASR.transcribe() called on device: {self.device}, audio size: {len(audio_data)} bytes")
         await self.ensure_loaded()
+        logger.info(f"Model loaded on device, starting transcription...")
 
         tmp_path = None
         try:
@@ -322,6 +332,7 @@ class PathummaASR(ASRModelBase):
             async with self._transcribe_lock:
                 text = self._transcribe_chunks_sync(wav)
 
+            logger.info(f"Transcription completed, text length: {len(text)}")
             return {"text": text, "words": [], "error": None}
 
         except Exception as e:
@@ -381,7 +392,7 @@ class ASRModelManager:
         self.models["typhoon"] = TyphoonASR(device=self.device)
         self.models["pathumma"] = PathummaASR(device=self.device)
         self.models["pathumma_noise"] = PathummaNoiseASR(device=self.device)
-        logger.info("ASR models registered (lazy load).")
+        logger.info(f"ASR models registered (lazy load) on device: {self.device}")
 
     async def ensure_model_loaded(self, model_name: str):
         if model_name not in self.models:
@@ -389,12 +400,17 @@ class ASRModelManager:
 
         model = self.models[model_name]
 
+        logger.info(f"ensure_model_loaded({model_name}) on device {self.device}, is_loaded: {model.is_loaded()}")
+
         # Already loaded
         if model.is_loaded():
             # refresh LRU
             self._loaded_order.pop(model_name, None)
             self._loaded_order[model_name] = True
+            logger.info(f"Model {model_name} already loaded on device {self.device}")
             return
+
+        logger.info(f"Loading model {model_name} on device {self.device}...")
 
         # Evict until we can load within max_loaded_models
         while len(self._loaded_order) >= self.max_loaded_models:
@@ -417,6 +433,7 @@ class ASRModelManager:
 
         # register as most recently used
         self._loaded_order[model_name] = True
+        logger.info(f"Model {model_name} loaded successfully on device {self.device}")
 
     async def transcribe_with_all_models(self, audio_data: bytes) -> Dict[str, Dict[str, Any]]:
         results: Dict[str, Dict[str, Any]] = {}

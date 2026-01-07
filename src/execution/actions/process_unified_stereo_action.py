@@ -220,7 +220,8 @@ class ProcessUnifiedStereoAction:
             logger.info("Loading and splitting stereo audio...")
             left_channel_data, right_channel_data, duration = await self._load_and_split_stereo(audio_path)
 
-            logger.info("Transcribing left and right channels concurrently...")
+            logger.info(f"Transcribing left and right channels concurrently... Agent device: {self.asr_manager_agent.device}, Caller device: {self.asr_manager_caller.device}")
+            logger.info(f"Agent adapter: {type(self.adapter_agent).__name__}, Caller adapter: {type(self.adapter_caller).__name__}")
             left_task = asyncio.create_task(
                 self._transcribe_channel(
                     left_channel_data,
@@ -238,7 +239,9 @@ class ProcessUnifiedStereoAction:
                 )
             )
 
+            logger.info("Tasks created, awaiting gather...")
             left_result, right_result = await asyncio.gather(left_task, right_task)
+            logger.info("Both channel transcriptions completed")
             
             # Step 3: Merge results with word-level timestamps
             logger.info("Merging stereo results...")
@@ -328,13 +331,16 @@ class ProcessUnifiedStereoAction:
 
     async def _transcribe_channel(self, channel_data: Dict[str, Any], model_name: str, channel_label: str, semaphore: Optional[asyncio.Semaphore] = None) -> Dict[str, Any]:
         """Transcribe a single channel using model adapter"""
-        logger.info(f"Transcribing {channel_label} channel with {model_name}...")
+        import time
+        start_time = time.time()
+        logger.info(f"Transcribing {channel_label} channel with {model_name} at {start_time:.2f}...")
 
         try:
             audio_bytes = channel_data.get("audio_bytes")
             if not audio_bytes:
                 raise ValueError(f"No audio bytes found for {channel_label} channel")
             adapter = self._get_adapter_for_channel(channel_label)
+            logger.info(f"Using adapter for {channel_label}: {type(adapter).__name__}, manager device: {adapter.model_manager.device} at {time.time():.2f}")
 
             if model_name in ["pathumma", "pathumma_noise"]:
                 return await self._transcribe_channel_chunked(
