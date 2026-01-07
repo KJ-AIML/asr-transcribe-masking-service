@@ -222,6 +222,9 @@ class ProcessUnifiedStereoAction:
 
             logger.info(f"Transcribing left and right channels concurrently... Agent device: {self.asr_manager_agent.device}, Caller device: {self.asr_manager_caller.device}")
             logger.info(f"Agent adapter: {type(self.adapter_agent).__name__}, Caller adapter: {type(self.adapter_caller).__name__}")
+            import time
+            gather_start = time.time()
+            logger.info(f"Creating tasks at {gather_start:.2f}...")
             left_task = asyncio.create_task(
                 self._transcribe_channel(
                     left_channel_data,
@@ -239,10 +242,11 @@ class ProcessUnifiedStereoAction:
                 )
             )
 
-            logger.info("Tasks created, relinquishing control...")
-            await asyncio.sleep(0)
-            logger.info("Tasks started, awaiting gather...")
+            logger.info(f"Tasks created at {time.time():.2f}, sleeping to allow scheduling...")
+            await asyncio.sleep(0.01)
+            logger.info(f"Starting gather at {time.time():.2f}...")
             left_result, right_result = await asyncio.gather(left_task, right_task)
+            logger.info(f"Gather completed at {time.time():.2f}, total time: {time.time() - gather_start:.2f}s")
             logger.info("Both channel transcriptions completed")
             
             # Step 3: Merge results with word-level timestamps
@@ -405,10 +409,13 @@ class ProcessUnifiedStereoAction:
         }
 
     async def _transcribe_channel_chunked(self, audio_bytes: bytes, channel_data: Dict[str, Any], model_name: str, channel_label: str, semaphore: Optional[asyncio.Semaphore] = None) -> Dict[str, Any]:
-        logger.info(f"Chunked transcription for {channel_label} with {model_name}")
+        import time
+        chunked_start = time.time()
+        logger.info(f"Chunked transcription for {channel_label} with {model_name} at {chunked_start:.2f}")
         if semaphore is None:
             semaphore = asyncio.Semaphore(self.max_concurrent_chunks)
 
+        logger.info(f"{channel_label}: Starting VAD segmentation at {time.time():.2f}...")
         segment_info = vad_segment_audio_bytes(
             wav_bytes=audio_bytes,
             target_sr=16_000,
@@ -418,6 +425,7 @@ class ProcessUnifiedStereoAction:
             max_segment_sec=60.0,
             use_ml_vad=settings.USE_ML_VAD,
         )
+        logger.info(f"{channel_label}: VAD segmentation completed in {time.time() - chunked_start:.2f}s, found {len(segment_info)} segments")
 
         adapter = self._get_adapter_for_channel(channel_label)
 
