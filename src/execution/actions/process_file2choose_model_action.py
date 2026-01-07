@@ -25,7 +25,6 @@ class ProcessFile2ChooseModelAction:
         self.max_concurrent_chunks = 9
         self.max_retries = 3
 
-
     def _check_memory_usage(self):
         """Check current memory usage and log warnings if approaching limits"""
         try:
@@ -42,7 +41,6 @@ class ProcessFile2ChooseModelAction:
                     f"Critical RAM usage: {memory_mb:.1f}MB / {self.max_memory_mb}MB"
                 )
 
-
         except Exception as e:
             logger.warning(f"Could not check memory usage: {e}")
 
@@ -52,12 +50,10 @@ class ProcessFile2ChooseModelAction:
             # Force garbage collection
             gc.collect()
 
-
             # Log memory after cleanup
             memory_info = self.process.memory_info()
             memory_mb = memory_info.rss / 1024 / 1024
             logger.debug(f"Memory after cleanup: {memory_mb:.1f}MB")
-
 
         except Exception as e:
             logger.warning(f"Memory cleanup failed: {e}")
@@ -67,7 +63,6 @@ class ProcessFile2ChooseModelAction:
     ) -> Dict[str, Any]:
         """Process chunks through compare workflow in parallel with concurrency limit and retry"""
         try:
-
             # Create semaphore to limit concurrent processing
             semaphore = asyncio.Semaphore(self.max_concurrent_chunks)
 

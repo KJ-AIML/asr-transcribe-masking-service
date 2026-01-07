@@ -17,27 +17,27 @@ async def lifespan(app: FastAPI):
     """Lifespan events for the FastAPI application"""
     # Startup
     logger.info("Starting AI Structure Microservice API")
-    
+
     # Initialize ASR models
     try:
         asr_manager = ASRModelManager()
         app.state.asr_manager = asr_manager
         logger.info("ASR models loaded successfully")
-        
+
         # Initialize transcription adapters
         initialize_adapters(asr_manager)
         logger.info("Transcription adapters initialized")
-        
+
     except Exception as e:
         logger.error(f"Failed to initialize models: {e}")
-    
+
     yield
-    
+
     # Shutdown
     logger.info("Shutting down AI Structure Microservice API")
-    
+
     # Cleanup models
-    if hasattr(app.state, 'asr_manager'):
+    if hasattr(app.state, "asr_manager"):
         app.state.asr_manager.unload_models()
         logger.info("ASR models unloaded")
 

@@ -22,7 +22,7 @@ def gpu_worker(device_id: int, seconds: int = 10):
     iters = 0
 
     while time.time() - start < seconds:
-        c = a @ b
+        a @ b
         # sync เพื่อให้แน่ใจว่า kernel รันจริง
         torch.cuda.synchronize(device)
         iters += 1

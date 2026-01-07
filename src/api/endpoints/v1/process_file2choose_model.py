@@ -19,10 +19,6 @@ logger = get_logger(__name__)
 class ModelSelectionResponse(BaseModel):
     """Response model for model selection processing"""
 
-
-class ModelSelectionResponse(BaseModel):
-    """Response model for model selection processing"""
-
     message: str
     filename: str
     model_selection_results: Dict[str, Any]

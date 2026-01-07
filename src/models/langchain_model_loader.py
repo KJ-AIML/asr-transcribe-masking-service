@@ -5,6 +5,7 @@ import os
 
 from src.config.settings import settings
 
+
 class LangchainModelLoader:
     def __init__(self):
         self.models = {}
@@ -21,7 +22,9 @@ class LangchainModelLoader:
         if settings.INFERENCE_SERVER_API_KEY:
             os.environ["INFERENCE_SERVER_API_KEY"] = settings.INFERENCE_SERVER_API_KEY
         if settings.INFERENCE_SERVER_MODEL_BASIC:
-            os.environ["INFERENCE_SERVER_MODEL_BASIC"] = settings.INFERENCE_SERVER_MODEL_BASIC
+            os.environ["INFERENCE_SERVER_MODEL_BASIC"] = (
+                settings.INFERENCE_SERVER_MODEL_BASIC
+            )
         if settings.INFERENCE_SERVER_URL:
             os.environ["INFERENCE_SERVER_URL"] = settings.INFERENCE_SERVER_URL
 
@@ -68,7 +71,9 @@ class LangchainModelLoader:
         self.models["deepseek_reasoning"] = model
         return model
 
-    def init_chat_model_inference_server(self, temperature: float = 0.0, **kwargs) -> Any:
+    def init_chat_model_inference_server(
+        self, temperature: float = 0.0, **kwargs
+    ) -> Any:
         config = {"temperature": temperature}
         api_key = None
         if "api_key" in kwargs:
@@ -76,7 +81,7 @@ class LangchainModelLoader:
         elif settings.INFERENCE_SERVER_API_KEY:
             api_key = settings.INFERENCE_SERVER_API_KEY
         config.update({k: v for k, v in kwargs.items() if k != "temperature"})
-        
+
         # Build ChatOpenAI parameters conditionally
         chat_params = {
             "model": settings.INFERENCE_SERVER_MODEL_BASIC,
@@ -84,13 +89,13 @@ class LangchainModelLoader:
             "top_p": kwargs.get("top_p", 0.90),
             "openai_api_base": settings.INFERENCE_SERVER_URL,
             "max_retries": 0,
-            "timeout": 1200
+            "timeout": 1200,
         }
-        
+
         # Only add openai_api_key if it exists
         if api_key:
             chat_params["openai_api_key"] = api_key
-        
+
         model = ChatOpenAI(**chat_params)
         self.models["inference_server"] = model
         return model

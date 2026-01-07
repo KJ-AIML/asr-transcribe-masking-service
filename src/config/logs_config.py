@@ -44,35 +44,35 @@ def setup_logging(
     # Console handler (always enabled)
     console_handler = logging.StreamHandler()
     console_handler.setLevel(level)
-    
+
     # Fix Unicode encoding for Windows console
-    if sys.platform == 'win32':
+    if sys.platform == "win32":
         # For Windows, we need to handle encoding differently
-        
+
         # Create a custom stream wrapper that handles UTF-8 properly
         class UnicodeStreamHandler:
             def __init__(self, stream):
                 self.stream = stream
-                
+
             def write(self, msg):
                 try:
                     # Try to write with UTF-8 encoding
-                    if hasattr(self.stream, 'buffer'):
-                        self.stream.buffer.write(msg.encode('utf-8'))
+                    if hasattr(self.stream, "buffer"):
+                        self.stream.buffer.write(msg.encode("utf-8"))
                         self.stream.buffer.flush()
                     else:
                         self.stream.write(msg)
                 except (UnicodeEncodeError, AttributeError):
                     # Fallback: replace problematic characters
-                    safe_msg = msg.encode('cp1252', errors='replace').decode('cp1252')
+                    safe_msg = msg.encode("cp1252", errors="replace").decode("cp1252")
                     self.stream.write(safe_msg)
-                    
+
             def flush(self):
                 self.stream.flush()
-        
+
         # Replace the stream with our Unicode-safe wrapper
         console_handler.stream = UnicodeStreamHandler(sys.stdout)
-    
+
     console_formatter = logging.Formatter(
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
@@ -81,7 +81,7 @@ def setup_logging(
 
     # File handler (if enabled)
     if save_to_file:
-        file_handler = logging.FileHandler(log_file, encoding='utf-8')
+        file_handler = logging.FileHandler(log_file, encoding="utf-8")
         file_handler.setLevel(level)
         file_formatter = logging.Formatter(
             "%(asctime)s - %(name)s - %(levelname)s - %(message)s"

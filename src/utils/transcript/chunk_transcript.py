@@ -4,11 +4,12 @@ from src.config.logs_config import get_logger
 
 logger = get_logger(__name__)
 
+
 def chunk_transcript(
     json_data: Dict[str, Any],
     chunk_duration: float = 45.0,
     overlap_duration: float = 5.0,
-    include_original_text: bool = False
+    include_original_text: bool = False,
 ) -> Dict[str, Any]:
     """
     Chunk a transcript JSON into overlapping time windows.
@@ -39,7 +40,7 @@ def chunk_transcript(
     total_duration = json_data["metadata"].get("duration", 0.0)
     segment_count = len(json_data["segments"])
     logger.info(f"Chunking transcript with {segment_count} segments")
-    
+
     if json_data["segments"]:
         max_segment_end = max(seg["end"] for seg in json_data["segments"])
         total_duration = max(total_duration, max_segment_end)
@@ -56,44 +57,51 @@ def chunk_transcript(
     step_size = chunk_duration - overlap_duration
     chunk_start = 0.0
     chunk_index = 0
-    
-    logger.info(f"Creating chunks with duration={chunk_duration}s, overlap={overlap_duration}s, step={step_size}s")
+
+    logger.info(
+        f"Creating chunks with duration={chunk_duration}s, overlap={overlap_duration}s, step={step_size}s"
+    )
 
     # Process chunks
     while chunk_start < total_duration:
         chunk_end = min(chunk_start + chunk_duration, total_duration)
-        
+
         # Find segments that overlap with this chunk's time window
         chunk_segments = [
-            segment for segment in json_data["segments"]
+            segment
+            for segment in json_data["segments"]
             if segment["start"] < chunk_end and segment["end"] > chunk_start
         ]
-        
+
         # Find words that overlap with this chunk's time window
         chunk_words = [
-            word for word in json_data["words"]
+            word
+            for word in json_data["words"]
             if word["start"] < chunk_end and word["end"] > chunk_start
         ]
-        
+
         # CRITICAL FIX: Skip creating chunks with no segments
         if not chunk_segments:
-            logger.warning(f"Skipping chunk {chunk_index}: no segments found in time window {chunk_start:.2f}s - {chunk_end:.2f}s")
+            logger.warning(
+                f"Skipping chunk {chunk_index}: no segments found in time window {chunk_start:.2f}s - {chunk_end:.2f}s"
+            )
             chunk_start += step_size
             chunk_index += 1
             continue
-        
+
         # Build text representations from segments
         chunk_text = ""
         chunk_simple_text = ""
         if chunk_segments:
-            chunk_text = "\n".join([
-                f"[{seg['start']:.2f} --> {seg['end']:.2f}] [{seg['channel']}]: {seg['text']}"
-                for seg in chunk_segments
-            ])
-            chunk_simple_text = "\n".join([
-                f"[{seg['channel']}]: {seg['text']}"
-                for seg in chunk_segments
-            ])
+            chunk_text = "\n".join(
+                [
+                    f"[{seg['start']:.2f} --> {seg['end']:.2f}] [{seg['channel']}]: {seg['text']}"
+                    for seg in chunk_segments
+                ]
+            )
+            chunk_simple_text = "\n".join(
+                [f"[{seg['channel']}]: {seg['text']}" for seg in chunk_segments]
+            )
 
         # Create chunk metadata
         chunk_metadata = {
@@ -103,7 +111,7 @@ def chunk_transcript(
             "duration": round(chunk_end - chunk_start, 2),
             "segment_count": len(chunk_segments),
             "word_count": len(chunk_words),
-            "is_last_chunk": chunk_end >= total_duration - 0.01
+            "is_last_chunk": chunk_end >= total_duration - 0.01,
         }
 
         # Build chunk object
@@ -112,11 +120,13 @@ def chunk_transcript(
             "simple_text": chunk_simple_text,
             "segments": chunk_segments,
             "words": chunk_words,
-            "metadata": chunk_metadata
+            "metadata": chunk_metadata,
         }
 
         chunks.append(chunk)
-        logger.info(f"Created chunk {chunk_index}: {chunk_start:.2f}s to {chunk_end:.2f}s with {len(chunk_segments)} segments")
+        logger.info(
+            f"Created chunk {chunk_index}: {chunk_start:.2f}s to {chunk_end:.2f}s with {len(chunk_segments)} segments"
+        )
 
         # If this was the last chunk, exit loop
         if chunk_end >= total_duration:
@@ -136,9 +146,9 @@ def chunk_transcript(
             "overlap_duration": overlap_duration,
             "step_size": step_size,
             "total_chunks": len(chunks),
-            "total_duration": round(total_duration, 2)
+            "total_duration": round(total_duration, 2),
         },
-        "original_metadata": json_data["metadata"]
+        "original_metadata": json_data["metadata"],
     }
 
     # Optionally include original text fields
@@ -167,8 +177,10 @@ def log_chunk_summary(chunked_result: Dict[str, Any]) -> None:
 
     for chunk in chunked_result["chunks"]:
         meta = chunk["metadata"]
-        logger.info(f"  Chunk {meta['chunk_index']}: "
-              f"{meta['chunk_start']:.2f}s - {meta['chunk_end']:.2f}s "
-              f"({meta['duration']:.2f}s, {meta['segment_count']} segments, "
-              f"{meta['word_count']} words)" +
-              (" [LAST]" if meta['is_last_chunk'] else ""))
+        logger.info(
+            f"  Chunk {meta['chunk_index']}: "
+            f"{meta['chunk_start']:.2f}s - {meta['chunk_end']:.2f}s "
+            f"({meta['duration']:.2f}s, {meta['segment_count']} segments, "
+            f"{meta['word_count']} words)"
+            + (" [LAST]" if meta["is_last_chunk"] else "")
+        )

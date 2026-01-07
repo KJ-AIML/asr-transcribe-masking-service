@@ -12,15 +12,5 @@ logger = get_logger(__name__)
 async def sample_agent_endpoint(query: str = ""):
     """Sample agent endpoint for v1 API"""
     logger.debug("Sample agent requested")
-    result = sample_agent.invoke(
-            {
-                "messages": 
-                [
-                    {
-                        "role": "user",
-                        "content": query
-                    }
-                ]
-            }
-        )
+    result = sample_agent.invoke({"messages": [{"role": "user", "content": query}]})
     return result["messages"]
