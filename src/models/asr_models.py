@@ -499,7 +499,7 @@ class ASRModelManager:
         logger.info(f"Model {model_name} loaded successfully on device {self.device}")
 
     async def transcribe_with_all_models(
-        self, audio_data: bytes
+        self, audio_data: bytes, language: str = "th"
     ) -> Dict[str, Dict[str, Any]]:
         results: Dict[str, Dict[str, Any]] = {}
 
@@ -507,7 +507,7 @@ class ASRModelManager:
         for model_name in list(self.models.keys()):
             try:
                 await self.ensure_model_loaded(model_name)
-                result = await self.models[model_name].transcribe(audio_data)
+                result = await self.models[model_name].transcribe(audio_data, language)
                 results[model_name] = result
             except Exception as e:
                 logger.exception(f"Error with {model_name}: {e}")
@@ -524,6 +524,7 @@ class ASRModelManager:
         audio_batch: List[bytes],
         model_names: List[str] = None,
         auto_unload: bool = True,
+        language: str = "th",
     ) -> List[Dict[str, Any]]:
         if model_names is None:
             model_names = list(self.models.keys())
@@ -544,7 +545,7 @@ class ASRModelManager:
                     start_time = time.time()
                     try:
                         await self.ensure_model_loaded(model_name)
-                        result = await self.models[model_name].transcribe(audio_data)
+                        result = await self.models[model_name].transcribe(audio_data, language)
                         processing_time = (time.time() - start_time) * 1000
                         chunk_result["transcriptions"][model_name] = result
                         chunk_result["processing_times_ms"][model_name] = (
@@ -580,14 +581,14 @@ class ASRModelManager:
         return batch_results
 
     async def transcribe_chunks_parallel(
-        self, audio_chunks: List[bytes], model_names: List[str] = None
+        self, audio_chunks: List[bytes], model_names: List[str] = None, language: str = "th"
     ) -> List[Dict[str, Any]]:
         if model_names is None:
             model_names = list(self.models.keys())
 
         tasks = []
         for i, audio_data in enumerate(audio_chunks):
-            task = self._transcribe_single_chunk_parallel(i, audio_data, model_names)
+            task = self._transcribe_single_chunk_parallel(i, audio_data, model_names, language)
             tasks.append(task)
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -612,7 +613,7 @@ class ASRModelManager:
         return batch_results
 
     async def _transcribe_single_chunk_parallel(
-        self, chunk_index: int, audio_data: bytes, model_names: List[str]
+        self, chunk_index: int, audio_data: bytes, model_names: List[str], language: str = "th"
     ) -> Dict[str, Any]:
         chunk_result = {
             "chunk_index": chunk_index,
@@ -624,7 +625,7 @@ class ASRModelManager:
         for model_name in model_names:
             if model_name not in self.models:
                 continue
-            task = self._transcribe_with_model_timing(model_name, audio_data)
+            task = self._transcribe_with_model_timing(model_name, audio_data, language)
             model_tasks.append((model_name, task))
 
         model_results = await asyncio.gather(
@@ -647,12 +648,12 @@ class ASRModelManager:
         return chunk_result
 
     async def _transcribe_with_model_timing(
-        self, model_name: str, audio_data: bytes
+        self, model_name: str, audio_data: bytes, language: str = "th"
     ) -> Dict[str, Any]:
         start_time = time.time()
         try:
             await self.ensure_model_loaded(model_name)
-            transcription = await self.models[model_name].transcribe(audio_data)
+            transcription = await self.models[model_name].transcribe(audio_data, language)
             processing_time = (time.time() - start_time) * 1000
             return {
                 "transcription": transcription,

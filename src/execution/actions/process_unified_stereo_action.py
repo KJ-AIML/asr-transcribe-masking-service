@@ -125,6 +125,16 @@ def _mp_transcribe_single(
             )
         )
 
+        post_processor = TranscriptPostProcessor(
+            overlap_tolerance=0.05,
+            max_repeat=3,
+            repetition_window_sec=2.0,
+        )
+
+        words = result.get("words", [])
+        dedup_words = post_processor.process_words(words)
+
+        result["words"] = dedup_words
         result["channel"] = channel_label
         result["speaker"] = channel_label
         return result
