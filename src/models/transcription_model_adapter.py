@@ -47,7 +47,7 @@ class TyphoonAdapter(BaseTranscriptionAdapter):
                 raise ValueError(f"Model {self.model_name} not available")
 
             # Transcribe using ASRModelManager
-            result = await model.transcribe(audio_data)
+            result = await model.transcribe(audio_data, language)
 
             if result.get("error"):
                 raise Exception(f"Transcription error: {result['error']}")

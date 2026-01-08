@@ -50,7 +50,7 @@ class ASRModelBase:
     def _load_model(self):
         raise NotImplementedError
 
-    async def transcribe(self, audio_data: bytes) -> Dict[str, Any]:
+    async def transcribe(self, audio_data: bytes, language: str = "th") -> Dict[str, Any]:
         raise NotImplementedError
 
     def unload_model(self):
@@ -91,8 +91,7 @@ class TyphoonASR(ASRModelBase):
             if not self._model_loaded:
                 # consider running in executor if import is slow
                 self._load_model()
-
-    async def transcribe(self, audio_data: bytes) -> Dict[str, Any]:
+    async def transcribe(self, audio_data: bytes, language: str = "th") -> Dict[str, Any]:
         if self._transcribe_fn is None:
             try:
                 await self.ensure_loaded()
@@ -352,10 +351,30 @@ class PathummaASR(ASRModelBase):
 
         return " ".join(results)
 
-    async def transcribe(self, audio_data: bytes) -> Dict[str, Any]:
+    async def transcribe(self, audio_data: bytes, language: str = "th") -> Dict[str, Any]:
         logger.info(
-            f"PathummaASR.transcribe() called on device: {self.device}, audio size: {len(audio_data)} bytes"
+            f"PathummaASR.transcribe() called on device: {self.device}, audio size: {len(audio_data)} bytes, language: {language}"
         )
+        
+        if language != self.lang:
+            logger.info(f"Language changed from {self.lang} to {language}, updating forced_decoder_ids")
+            self.lang = language
+            if self._processor is not None:
+                try:
+                    self._forced_decoder_ids = self._processor.get_decoder_prompt_ids(
+                        language=self.lang, task=self.task
+                    )
+                    if self._forced_decoder_ids is not None:
+                        try:
+                            self._wf_model.generation_config.forced_decoder_ids = (
+                                self._forced_decoder_ids
+                            )
+                        except Exception:
+                            logger.exception("Failed to set forced_decoder_ids on generation_config")
+                except Exception:
+                    logger.exception("Failed to compute forced_decoder_ids for new language")
+                    self._forced_decoder_ids = None
+        
         await self.ensure_loaded()
         logger.info("Model loaded on device, starting transcription...")
 
