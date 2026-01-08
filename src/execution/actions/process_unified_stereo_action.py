@@ -156,7 +156,7 @@ def _mp_transcribe_chunked(
         min_speech_sec=0.25,
         min_silence_sec=0.25,
         max_segment_sec=60.0,
-        use_ml_vad=settings.USE_ML_VAD, 
+        use_ml_vad=settings.USE_ML_VAD,
     )
 
     print(
