@@ -333,6 +333,9 @@ class PathummaASR(ASRModelBase):
                     "num_beams": self.num_beams,
                 }
 
+                if self._forced_decoder_ids is not None:
+                    generate_kwargs["forced_decoder_ids"] = self._forced_decoder_ids
+
                 generated = self._wf_model.generate(
                     input_features,
                     **generate_kwargs,
