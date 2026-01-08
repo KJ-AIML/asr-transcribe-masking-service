@@ -745,29 +745,21 @@ class ProcessWav2FileAction:
             chunk_dict = {}
             for chunk_result in transcription_results:
                 chunk_id = chunk_result["chunk_index"]
+                
+                # Only include models that actually transcribed this chunk
+                model_transcriptions = {}
+                for model_name, trans_data in chunk_result["transcriptions"].items():
+                    model_transcriptions[model_name] = {
+                        "text": trans_data.get("text", "")
+                    }
+                
                 chunk_dict[chunk_id] = {
                     "chunk_info": {
                         "start_time": chunk_result["start_sec"],
                         "end_time": chunk_result["end_sec"],
                         "duration": chunk_result["duration_sec"],
                     },
-                    "model_transcriptions": {
-                        "typhoon": {
-                            "text": chunk_result["transcriptions"]
-                            .get("typhoon", {})
-                            .get("text", "")
-                        },
-                        "pathumma": {
-                            "text": chunk_result["transcriptions"]
-                            .get("pathumma", {})
-                            .get("text", "")
-                        },
-                        "pathumma_noise": {
-                            "text": chunk_result["transcriptions"]
-                            .get("pathumma_noise", {})
-                            .get("text", "")
-                        },
-                    },
+                    "model_transcriptions": model_transcriptions,
                 }
 
             # Sanitize transcription_results for response: keep only text/error per model
