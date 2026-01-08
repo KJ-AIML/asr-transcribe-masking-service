@@ -84,7 +84,12 @@ def _gpu_worker_process(
 
             chunk_index, chunk_bytes, model_name, target_device = task
             chunk_start = time.time()
-            print(f"[GPU Worker {device}] Processing chunk {chunk_index} with model {model_name}")
+            print(f"[GPU Worker {device}] Processing chunk {chunk_index} with model {model_name} (assigned: {assigned_models})")
+
+            if model_name not in assigned_models:
+                print(f"[GPU Worker {device}] ERROR: Model {model_name} not in assigned models {assigned_models}")
+                result_queue.put((chunk_index, model_name, {}, 0, f"Model {model_name} not assigned to this worker"))
+                continue
 
             try:
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
@@ -198,6 +203,7 @@ class ProcessWav2FileAction:
                 logger.info("Using single GPU with all models")
 
         logger.info(f"Using {len(devices)} devices: {devices}")
+        logger.info(f"GPU model mapping: {gpu_model_mapping}")
 
         all_model_names = ["typhoon", "pathumma", "pathumma_noise"]
 
@@ -248,6 +254,9 @@ class ProcessWav2FileAction:
                         task = (chunk_index, chunk_bytes, model_name, device_for_model)
                         device_task_queues[device_for_model].put(task)
                         task_count += 1
+                        logger.debug(
+                            f"Task distributed: chunk {chunk_index}, model {model_name} -> device {device_for_model}"
+                        )
 
             # Send stop signals to all device-specific workers
             for device in devices:
