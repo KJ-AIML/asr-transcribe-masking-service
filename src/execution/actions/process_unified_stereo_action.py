@@ -26,6 +26,7 @@ from src.models.transcription_model_adapter import (
 )
 from src.utils.file.json_utils import save_result_to_json
 from src.utils.audio.chunk_wav_audio import vad_segment_audio_bytes
+from src.utils.transcript.post_processor import TranscriptPostProcessor
 
 
 logger = get_logger(__name__)
@@ -204,10 +205,18 @@ def _mp_transcribe_chunked(
             if os.path.exists(chunk_audio_path):
                 os.unlink(chunk_audio_path)
 
+    post_processor = TranscriptPostProcessor(
+        overlap_tolerance=0.05,
+        max_repeat=3,
+        repetition_window_sec=2.0,
+    )
+    
+    dedup_words = post_processor.process_words(all_words)
+    
     result = {
         "channel": channel_label,
         "speaker": channel_label,
-        "words": all_words,
+        "words": dedup_words,
         "language": "th",
         "duration": segment_info.get("total_duration_sec", 0),
     }
