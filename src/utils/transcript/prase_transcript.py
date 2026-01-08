@@ -2,6 +2,7 @@ import re
 from datetime import datetime
 import time
 
+
 def parse_transcription(input_data):
     """
     Parse transcription text or JSON into structured JSON format.
@@ -14,7 +15,7 @@ def parse_transcription(input_data):
     Returns:
         dict: Structured JSON object with transcript wrapper
     """
-    
+
     # If input is already a dict with the expected structure, return it wrapped
     if isinstance(input_data, dict):
         # Validate required fields
@@ -22,28 +23,35 @@ def parse_transcription(input_data):
         for field in required_fields:
             if field not in input_data:
                 raise ValueError(f"Input JSON must contain '{field}' field")
-        
+
         # Ensure text and simple_text are present
         result = input_data.copy()
         if "text" not in result:
-            result["text"] = "\n".join([
-                f"[{seg['start']:.2f} --> {seg['end']:.2f}] [{seg['channel']}]: {seg['text']}"
-                for seg in result["segments"]
-            ]) + "\n"
-        
+            result["text"] = (
+                "\n".join(
+                    [
+                        f"[{seg['start']:.2f} --> {seg['end']:.2f}] [{seg['channel']}]: {seg['text']}"
+                        for seg in result["segments"]
+                    ]
+                )
+                + "\n"
+            )
+
         if "simple_text" not in result:
-            result["simple_text"] = "\n".join([
-                f"[{seg['channel']}]: {seg['text']}"
-                for seg in result["segments"]
-            ]) + "\n"
-        
+            result["simple_text"] = (
+                "\n".join(
+                    [f"[{seg['channel']}]: {seg['text']}" for seg in result["segments"]]
+                )
+                + "\n"
+            )
+
         # Wrap in transcript object
         return {"transcript": result}
-    
+
     # If input is a string, parse it as text
     if isinstance(input_data, str):
         # Pattern: [start --> end] [speaker]: text
-        pattern = r'\s*\[([0-9.]+)\s*-->\s*([0-9.]+)\]\s*\[([^\]]+)\]\s*:\s*(.+)'
+        pattern = r"\s*\[([0-9.]+)\s*-->\s*([0-9.]+)\]\s*\[([^\]]+)\]\s*:\s*(.+)"
     else:
         raise ValueError("Input must be either a string or a dictionary")
 
@@ -54,9 +62,9 @@ def parse_transcription(input_data):
     max_end_time = 0.0
 
     # Process each line of input
-    lines = input_data.strip().split('\n')
+    lines = input_data.strip().split("\n")
     print(f"DEBUG: Total lines to process: {len(lines)}")
-    
+
     for line_num, line in enumerate(lines):
         if not line.strip():
             continue
@@ -86,11 +94,11 @@ def parse_transcription(input_data):
             start=start_time,
             end=end_time,
             speaker=speaker,
-            text=text_content
+            text=text_content,
         )
 
         # Collect words for flattened array
-        all_words.extend(segment['words'])
+        all_words.extend(segment["words"])
         segments.append(segment)
 
     # Generate metadata
@@ -104,9 +112,10 @@ def parse_transcription(input_data):
             "simple_text": "\n".join(simple_text_lines) + "\n",
             "segments": segments,
             "words": all_words,
-            "metadata": metadata
+            "metadata": metadata,
         }
     }
+
 
 def tokenize_thai(text):
     """
@@ -114,20 +123,21 @@ def tokenize_thai(text):
     """
     return text.split()
 
+
 def assign_probability(word):
     """
     Assign confidence probability score based on word characteristics.
     Adjusted to 0.95-0.99 range to match target output.
     """
     word_len = len(word)
-    short_particles = {'ค่ะ', 'ครับ', 'คะ', 'นะ', 'อะ', 'อ่ะ', 'จ้ะ', 'จ๊ะ', 'นะคะ', 'นะครับ'}
+    short_particles = {"ค่ะ", "ครับ", "คะ", "นะ", "อะ", "อ่ะ", "จ้ะ", "จ๊ะ", "นะคะ", "นะครับ"}
 
     # Short particles: 0.95
     if word in short_particles:
         return 0.95
 
     # Short words with ellipsis or special chars: 0.95
-    if '...' in word or word_len <= 3:
+    if "..." in word or word_len <= 3:
         return 0.95
 
     # Long words (>15 chars): 0.97-0.98
@@ -137,43 +147,45 @@ def assign_probability(word):
     # Normal words: 0.98-0.99
     return 0.99
 
+
 def validate_transcript_structure(data):
     """
     Validate that the transcript data has the expected structure.
-    
+
     Args:
         data: Dictionary to validate
-        
+
     Returns:
         bool: True if valid, raises ValueError if invalid
     """
     required_fields = ["segments", "words", "metadata"]
-    
+
     for field in required_fields:
         if field not in data:
             raise ValueError(f"Missing required field: {field}")
-    
+
     # Validate segments
     for i, segment in enumerate(data["segments"]):
         segment_fields = ["id", "start", "end", "text", "channel", "words"]
         for field in segment_fields:
             if field not in segment:
                 raise ValueError(f"Segment {i} missing field: {field}")
-    
+
     # Validate words
     for i, word in enumerate(data["words"]):
         word_fields = ["start", "end", "word", "probability", "channel"]
         for field in word_fields:
             if field not in word:
                 raise ValueError(f"Word {i} missing field: {field}")
-    
+
     # Validate metadata
     metadata_fields = ["duration", "language"]
     for field in metadata_fields:
         if field not in data["metadata"]:
             raise ValueError(f"Metadata missing field: {field}")
-    
+
     return True
+
 
 def create_segment(id, start, end, speaker, text):
     """
@@ -182,7 +194,7 @@ def create_segment(id, start, end, speaker, text):
     words = tokenize_thai(text)
     duration = end - start
     word_count = len(words)
-    char_count = len(text.replace(' ', ''))
+    char_count = len(text.replace(" ", ""))
 
     words_data = []
     if word_count > 0:
@@ -191,13 +203,15 @@ def create_segment(id, start, end, speaker, text):
             word_start = start + (i * word_duration)
             word_end = start + ((i + 1) * word_duration)
 
-            words_data.append({
-                "start": round(word_start, 2),
-                "end": round(word_end, 2),
-                "word": word,
-                "probability": round(assign_probability(word), 2),
-                "channel": speaker
-            })
+            words_data.append(
+                {
+                    "start": round(word_start, 2),
+                    "end": round(word_end, 2),
+                    "word": word,
+                    "probability": round(assign_probability(word), 2),
+                    "channel": speaker,
+                }
+            )
 
     return {
         "id": id,
@@ -209,8 +223,9 @@ def create_segment(id, start, end, speaker, text):
         "words": words_data,
         "duration": round(duration, 2),
         "word_count": word_count,
-        "char_count": char_count
+        "char_count": char_count,
     }
+
 
 def generate_metadata(duration):
     """
@@ -236,7 +251,7 @@ def generate_metadata(duration):
             "issues_fixed": 0,
             "rerun_performed": False,
             "end_time": round(start_time + duration, 1),
-            "total_duration": round(duration, 1)
+            "total_duration": round(duration, 1),
         },
         "audio_info": {
             "channels": channels,
@@ -244,8 +259,8 @@ def generate_metadata(duration):
             "sample_rate": sample_rate,
             "duration": round(duration, 2),
             "format_name": "wav",
-            "size": estimated_size
+            "size": estimated_size,
         },
         "generated_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%f"),
-        "format_version": "1.0"
+        "format_version": "1.0",
     }

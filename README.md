@@ -1,19 +1,23 @@
-# ASR Service Server
+# ASR Transcribe Masking Service
 
-AI-powered Automatic Speech Recognition service for Thai language transcription with advanced PII detection and quality assurance.
+AI-powered Automatic Speech Recognition service for Thai language transcription with multi-GPU parallel processing and advanced PII detection.
 
 ## 🎯 Overview
 
-This service provides enterprise-grade ASR (Automatic Speech Recognition) capabilities specifically optimized for Thai language audio processing. Built with FastAPI and following hexagonal architecture principles, it offers multiple ASR models, intelligent model selection, and comprehensive privacy protection.
+This service provides enterprise-grade ASR (Automatic Speech Recognition) capabilities specifically optimized for Thai language audio processing. Built with FastAPI and following hexagonal architecture principles, it offers multi-GPU parallel processing, stereo audio support, multiple ASR models, intelligent model selection, and comprehensive privacy protection.
 
 ## ✨ Key Features
 
 ### 🎤 ASR Transcription
 - **Multiple Model Support**: Typhoon, Pathumma, and Pathumma-noise models
-- **Parallel Processing**: Process audio with multiple models simultaneously
+- **Multi-GPU Parallel Processing**: Process stereo audio channels simultaneously across multiple GPUs
+- **Stereo Audio Support**: Separate Agent (left) and Caller (right) channel transcription
+- **Multiprocessing Architecture**: CUDA-safe multiprocessing with spawn start method
+- **CPU Fallback**: Automatic CPU support when GPU is unavailable
 - **Smart Model Selection**: AI-powered model selection based on audio context
-- **Chunk-based Processing**: Efficient handling of large audio files
-- **Memory Management**: Optimized for production workloads
+- **Chunk-based Processing**: Efficient handling of large audio files (>10 minutes)
+- **Memory Management**: Lazy model loading with LRU eviction, optimized for production workloads
+- **Hanging Prevention**: Queue timeouts and process termination for long-running tasks
 
 ### 🔒 Privacy & Compliance
 - **PII Detection**: Automatic detection of personal information
@@ -89,6 +93,23 @@ Once running, access the interactive API documentation at: `http://localhost:300
 
 ### Main Endpoints
 
+#### Process Unified Stereo Audio (Multi-GPU)
+```http
+POST /api/v1/process-unified-stereo
+Content-Type: multipart/form-data
+
+file: <stereo_wav_file>
+force_model: typhoon|pathumma|pathumma_noise (optional)
+skip_model_selection: true|false (default: false)
+auto_continue: true|false (default: true)
+```
+
+**Features:**
+- Automatically detects and uses multiple GPUs for parallel processing
+- Separates Agent (left) and Caller (right) channels
+- Supports CPU fallback when GPU unavailable
+- Handles files >10 minutes with chunked processing
+
 #### Process WAV File
 ```http
 POST /api/v1/process_wav_file
@@ -96,6 +117,15 @@ Content-Type: multipart/form-data
 
 file: <wav_file>
 with_transcription: true/false
+```
+
+#### Process WAV to File (Multiprocessing)
+```http
+POST /api/v1/process_wav2file
+Content-Type: multipart/form-data
+
+file: <wav_file>
+model: typhoon|pathumma|pathumma_noise
 ```
 
 #### Process JSON Transcript
@@ -134,6 +164,21 @@ POST /api/v1/process_qa_auditor
 | `LOG_LEVEL` | Logging level | info |
 | `REDIS_HOST` | Redis host | localhost |
 | `REDIS_PORT` | Redis port | 6379 |
+| `USE_ML_VAD` | Use ML-based voice activity detection | false |
+
+### GPU/CPU Configuration
+
+The service automatically detects and uses available GPUs:
+
+- **2+ GPUs**: Assigns cuda:0 to Agent (left channel) and cuda:1 to Caller (right channel)
+- **1 GPU**: Both channels use the same GPU with parallel processing
+- **No GPU**: Automatically falls back to CPU processing
+
+**Multiprocessing:**
+- Uses `spawn` start method for CUDA compatibility
+- Isolated ASR managers per worker process
+- Per-process device assignment to prevent tensor device mismatch
+- Queue timeouts and process termination for reliability
 
 ### Model Configuration
 
@@ -141,14 +186,31 @@ The service supports three ASR models:
 
 1. **Typhoon**: Fast, optimized for clear audio
 2. **Pathumma**: Balanced performance for general use
-3. **Pathumma-noise**: Enhanced for noisy environments
+3. **Pathumma-noise**: Enhanced for noisy environments (noise-resistant variant of Pathumma)
+
+**Pathumma-noise** is a subclass of Pathumma with additional noise handling capabilities, making it ideal for:
+- Call center recordings with background noise
+- Outdoor recordings
+- Low-quality audio sources
 
 ## 📊 Performance
 
-- **Parallel Processing**: Process multiple audio chunks simultaneously
-- **Memory Efficient**: Automatic model cache management
-- **Scalable**: Designed for horizontal scaling
-- **Async Processing**: Non-blocking I/O operations
+### Multi-GPU Architecture
+- **Parallel Channel Processing**: Agent and Caller transcribed simultaneously on separate GPUs
+- **Round-robin Distribution**: Audio chunks distributed across available GPUs
+- **Per-Process Isolation**: Each worker process has its own ASR manager to avoid CUDA race conditions
+- **Lazy Model Loading**: Models loaded on-demand with LRU cache eviction
+
+### Scalability
+- **Multi-GPU Support**: Leverages 2+ GPUs for stereo audio processing
+- **CPU Fallback**: Graceful degradation when GPU unavailable
+- **Horizontal Scaling**: Docker-ready for container orchestration
+- **Async Processing**: Non-blocking I/O operations for high throughput
+
+### Reliability
+- **Hanging Prevention**: Queue timeouts (30s) and process termination for long files
+- **Memory Management**: Automatic model cache cleanup and resource cleanup
+- **Error Recovery**: Retry mechanisms and graceful error handling
 
 ## 🧪 Testing
 
@@ -158,12 +220,15 @@ uv run pytest src/tests/
 
 # Run specific test
 uv run pytest src/tests/test_masker_action.py
+
+# Test multi-GPU configuration
+uv run pytest src/tests/test_gpu_cudax2.py
 ```
 
 ## 📁 Project Structure
 
 ```
-asr_service_server/
+asr_transcribe_masking_service/
 ├── src/
 │   ├── agents/          # AI agents and workflows
 │   │   ├── prompts/     # Agent prompts and instructions
@@ -185,12 +250,30 @@ asr_service_server/
 
 ## 🔗 Dependencies
 
-- **FastAPI**: Modern web framework
+### Core Framework
+- **FastAPI**: Modern web framework with async support
+- **Pydantic**: Data validation and settings management
+- **Pydantic Settings**: Configuration management
+
+### AI & ML
 - **LangChain/LangGraph**: AI workflow orchestration
-- **Transformers**: Hugging Face models
-- **Pydantic**: Data validation
+- **Transformers**: Hugging Face models and tokenizers
+- **PyTorch**: Deep learning framework with CUDA support
 - **Typhoon ASR**: Thai-specific ASR model
-- **OpenAI**: GPT models for agents
+- **Pathumma ASR**: High-quality Thai transcription model
+- **Pathumma-noise ASR**: Noise-resistant variant for challenging environments
+
+### Audio Processing
+- **soundfile**: Audio file I/O
+- **numpy**: Numerical operations for audio data
+
+### External Services
+- **OpenAI**: GPT models for AI agents
+- **DeepSeek**: Alternative LLM provider
+
+### Infrastructure
+- **Redis**: Caching and queue management
+- **multiprocessing**: Python parallel processing for multi-GPU support
 
 ## 🤝 Contributing
 

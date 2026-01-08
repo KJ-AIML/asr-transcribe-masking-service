@@ -15,6 +15,7 @@ ASRModelManager() to suit your GPU VRAM (default=1 for a single large model on o
 
 from typing import Dict, Any, Optional, List
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 import torch
 import time
 import asyncio
@@ -33,6 +34,8 @@ logger = get_logger(__name__)
 BASE_DIR = Path(__file__).resolve().parents[2]
 ASR_MODELS_CACHE_DIR = BASE_DIR / "asr_models_cache"
 ASR_MODELS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+_DEVICE_EXECUTORS: Dict[str, ThreadPoolExecutor] = {}
 
 
 class ASRModelBase:
@@ -73,10 +76,12 @@ class TyphoonASR(ASRModelBase):
 
         # synchronous import and load
         import signal
+
         if not hasattr(signal, "SIGKILL"):
             signal.SIGKILL = signal.SIGTERM
 
         from typhoon_asr import transcribe  # may raise ImportError
+
         self._transcribe_fn = transcribe
         self._model_loaded = True
         logger.info("Typhoon ASR model loaded")
@@ -132,7 +137,10 @@ class TyphoonASR(ASRModelBase):
             self._model_loaded = False
             # clear module cache
             import sys
-            modules_to_remove = [m for m in list(sys.modules.keys()) if "typhoon_asr" in m]
+
+            modules_to_remove = [
+                m for m in list(sys.modules.keys()) if "typhoon_asr" in m
+            ]
             for m in modules_to_remove:
                 sys.modules.pop(m, None)
 
@@ -153,7 +161,12 @@ class PathummaASR(ASRModelBase):
     moving models to device only when requested. Chunking and dtype casting are handled.
     """
 
-    def __init__(self, model_name: str = "nectec/Pathumma-whisper-th-large-v3", chunk_sec: int = 25, device: Optional[str] = None):
+    def __init__(
+        self,
+        model_name: str = "nectec/Pathumma-whisper-th-large-v3",
+        chunk_sec: int = 25,
+        device: Optional[str] = None,
+    ):
         super().__init__(model_name, device=device)
         self.lang = "th"
         self.task = "transcribe"
@@ -162,6 +175,7 @@ class PathummaASR(ASRModelBase):
         self._wf_model: Optional[WhisperForConditionalGeneration] = None
         self._forced_decoder_ids = None
         self._load_lock = asyncio.Lock()
+        self._transcribe_lock = asyncio.Lock()
         self.num_beams = 1
         self.max_new_tokens = 256
         # safe chunk <= 30 sec (use 25 by default)
@@ -194,21 +208,29 @@ class PathummaASR(ASRModelBase):
         if self._model_loaded and self._wf_model is not None:
             return
 
-        logger.info(f"Loading Pathumma model {self.model_name} dtype={self.torch_dtype} device={self.device}")
+        logger.info(
+            f"Loading Pathumma model {self.model_name} dtype={self.torch_dtype} device={self.device}"
+        )
 
         local_model_path = None
         try:
             local_model_path = self._download_local_model()
         except Exception as e:
-            logger.warning(f"snapshot_download failed: {e} - will try to load from hub directly")
+            logger.warning(
+                f"snapshot_download failed: {e} - will try to load from hub directly"
+            )
             local_model_path = self.model_name
 
         self._processor = WhisperProcessor.from_pretrained(local_model_path)
 
         try:
-            self._forced_decoder_ids = self._processor.get_decoder_prompt_ids(language=self.lang, task=self.task)
+            self._forced_decoder_ids = self._processor.get_decoder_prompt_ids(
+                language=self.lang, task=self.task
+            )
         except Exception:
-            logger.exception("Failed to compute forced_decoder_ids; will use default decoding")
+            logger.exception(
+                "Failed to compute forced_decoder_ids; will use default decoding"
+            )
             self._forced_decoder_ids = None
 
         self._wf_model = WhisperForConditionalGeneration.from_pretrained(
@@ -221,8 +243,11 @@ class PathummaASR(ASRModelBase):
         if torch.cuda.is_available() and "cuda" in self.device:
             try:
                 self._wf_model = self._wf_model.to(self.device)
+                logger.info(f"Pathumma model moved to device: {self.device}")
             except Exception:
-                logger.exception("Failed to move Pathumma model to device; continuing with CPU (may be slow)")
+                logger.exception(
+                    "Failed to move Pathumma model to device; continuing with CPU (may be slow)"
+                )
 
         self._wf_model.eval()
 
@@ -232,11 +257,20 @@ class PathummaASR(ASRModelBase):
             self._wf_model.generation_config.num_beams = self.num_beams
             if self._forced_decoder_ids is not None:
                 try:
-                    self._wf_model.generation_config.forced_decoder_ids = self._forced_decoder_ids
+                    self._wf_model.generation_config.forced_decoder_ids = (
+                        self._forced_decoder_ids
+                    )
                 except Exception:
-                    logger.exception("Failed to set forced_decoder_ids on generation_config")
+                    logger.exception(
+                        "Failed to set forced_decoder_ids on generation_config"
+                    )
         except Exception:
             logger.debug("Failed to set generation_config - fine.")
+
+        # Verify model is on expected device
+        if self._wf_model is not None:
+            actual_device = next(self._wf_model.parameters()).device
+            logger.info(f"Pathumma model verified on device: {actual_device}")
 
         self._model_loaded = True
         logger.info("Pathumma model loaded (transformers style)")
@@ -249,6 +283,7 @@ class PathummaASR(ASRModelBase):
 
     def _load_audio_tensor(self, tmp_path: str) -> torch.Tensor:
         import torchaudio
+
         wav, sr = torchaudio.load(tmp_path)
         if sr != 16000:
             wav = torchaudio.functional.resample(wav, sr, 16000)
@@ -261,10 +296,68 @@ class PathummaASR(ASRModelBase):
     def _chunk_audio(self, wav: torch.Tensor):
         chunk_size = int(self.chunk_sec * 16000)
         for i in range(0, len(wav), chunk_size):
-            yield wav[i:i + chunk_size]
+            yield wav[i : i + chunk_size]
+
+    def _transcribe_chunks_sync(self, wav: torch.Tensor) -> str:
+        results: List[str] = []
+
+        with torch.no_grad():
+            for chunk in self._chunk_audio(wav):
+                if chunk.numel() == 0:
+                    continue
+
+                inputs = self._processor(
+                    chunk,
+                    sampling_rate=16000,
+                    return_tensors="pt",
+                    return_attention_mask=True,
+                    padding="max_length",
+                    truncation=True,
+                )
+
+                # Verify and ensure model and input tensors are on the same device
+                model_device = next(self._wf_model.parameters()).device
+                input_features = inputs.input_features.to(
+                    device=model_device, dtype=self._wf_model.dtype
+                )
+
+                attention_mask = (
+                    inputs.attention_mask.to(model_device)
+                    if "attention_mask" in inputs
+                    else None
+                )
+
+                generate_kwargs = {
+                    "attention_mask": attention_mask,
+                    "max_new_tokens": self.max_new_tokens,
+                    "num_beams": self.num_beams,
+                }
+
+                if self._forced_decoder_ids is not None:
+                    generate_kwargs["forced_decoder_ids"] = self._forced_decoder_ids
+
+                generated = self._wf_model.generate(
+                    input_features,
+                    **generate_kwargs,
+                )
+
+                text = self._processor.batch_decode(
+                    generated, skip_special_tokens=True
+                )[0]
+                results.append(text)
+
+                del inputs, input_features, attention_mask, generated
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+        return " ".join(results)
 
     async def transcribe(self, audio_data: bytes) -> Dict[str, Any]:
+        logger.info(
+            f"PathummaASR.transcribe() called on device: {self.device}, audio size: {len(audio_data)} bytes"
+        )
         await self.ensure_loaded()
+        logger.info("Model loaded on device, starting transcription...")
 
         tmp_path = None
         try:
@@ -274,47 +367,11 @@ class PathummaASR(ASRModelBase):
 
             wav = self._load_audio_tensor(tmp_path)
 
-            results: List[str] = []
+            async with self._transcribe_lock:
+                text = self._transcribe_chunks_sync(wav)
 
-            with torch.no_grad():
-                for chunk in self._chunk_audio(wav):
-                    if chunk.numel() == 0:
-                        continue
-
-                    inputs = self._processor(
-                        chunk,
-                        sampling_rate=16000,
-                        return_tensors="pt",
-                        return_attention_mask=True,
-                        padding="max_length",
-                        truncation=True,
-                    )
-
-                    # cast input_features to model dtype
-                    input_features = inputs.input_features.to(device=self.device, dtype=self._wf_model.dtype)
-
-                    attention_mask = inputs.attention_mask.to(device=self.device) if "attention_mask" in inputs else None
-
-                    generate_kwargs = {
-                        "attention_mask": attention_mask,
-                        "max_new_tokens": self.max_new_tokens,
-                        "num_beams": self.num_beams,
-                    }
-
-                    generated = self._wf_model.generate(
-                        input_features,
-                        **generate_kwargs,
-                    )
-
-                    text = self._processor.batch_decode(generated, skip_special_tokens=True)[0]
-                    results.append(text)
-
-                    # immediate cleanup
-                    del inputs, input_features, attention_mask, generated
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-
-            return {"text": " ".join(results), "words": [], "error": None}
+            logger.info(f"Transcription completed, text length: {len(text)}")
+            return {"text": text, "words": [], "error": None}
 
         except Exception as e:
             logger.exception(f"Pathumma transcription error: {e}")
@@ -358,7 +415,11 @@ class PathummaASR(ASRModelBase):
 
 class PathummaNoiseASR(PathummaASR):
     def __init__(self, device: Optional[str] = None):
-        super().__init__("PogusTheWhisper/Pathumma-whisper-th-large-v3-natural-noise-finetuned", device=device)
+        super().__init__(
+            "PogusTheWhisper/Pathumma-whisper-th-large-v3-natural-noise-finetuned",
+            device=device,
+        )
+
 
 class ASRModelManager:
     def __init__(self, max_loaded_models: int = 1, device: Optional[str] = None):
@@ -373,7 +434,7 @@ class ASRModelManager:
         self.models["typhoon"] = TyphoonASR(device=self.device)
         self.models["pathumma"] = PathummaASR(device=self.device)
         self.models["pathumma_noise"] = PathummaNoiseASR(device=self.device)
-        logger.info("ASR models registered (lazy load).")
+        logger.info(f"ASR models registered (lazy load) on device: {self.device}")
 
     async def ensure_model_loaded(self, model_name: str):
         if model_name not in self.models:
@@ -381,12 +442,19 @@ class ASRModelManager:
 
         model = self.models[model_name]
 
+        logger.info(
+            f"ensure_model_loaded({model_name}) on device {self.device}, is_loaded: {model.is_loaded()}"
+        )
+
         # Already loaded
         if model.is_loaded():
             # refresh LRU
             self._loaded_order.pop(model_name, None)
             self._loaded_order[model_name] = True
+            logger.info(f"Model {model_name} already loaded on device {self.device}")
             return
+
+        logger.info(f"Loading model {model_name} on device {self.device}...")
 
         # Evict until we can load within max_loaded_models
         while len(self._loaded_order) >= self.max_loaded_models:
@@ -409,8 +477,11 @@ class ASRModelManager:
 
         # register as most recently used
         self._loaded_order[model_name] = True
+        logger.info(f"Model {model_name} loaded successfully on device {self.device}")
 
-    async def transcribe_with_all_models(self, audio_data: bytes) -> Dict[str, Dict[str, Any]]:
+    async def transcribe_with_all_models(
+        self, audio_data: bytes
+    ) -> Dict[str, Dict[str, Any]]:
         results: Dict[str, Dict[str, Any]] = {}
 
         # sequential to avoid concurrent loads; if you have enough VRAM, you can parallelize
@@ -429,14 +500,23 @@ class ASRModelManager:
 
         return results
 
-    async def transcribe_batch(self, audio_batch: List[bytes], model_names: List[str] = None, auto_unload: bool = True) -> List[Dict[str, Any]]:
+    async def transcribe_batch(
+        self,
+        audio_batch: List[bytes],
+        model_names: List[str] = None,
+        auto_unload: bool = True,
+    ) -> List[Dict[str, Any]]:
         if model_names is None:
             model_names = list(self.models.keys())
 
         batch_results = []
         try:
             for i, audio_data in enumerate(audio_batch):
-                chunk_result = {"chunk_index": i, "transcriptions": {}, "processing_times_ms": {}}
+                chunk_result = {
+                    "chunk_index": i,
+                    "transcriptions": {},
+                    "processing_times_ms": {},
+                }
                 for model_name in model_names:
                     if model_name not in self.models:
                         logger.warning(f"Model {model_name} not available")
@@ -448,12 +528,21 @@ class ASRModelManager:
                         result = await self.models[model_name].transcribe(audio_data)
                         processing_time = (time.time() - start_time) * 1000
                         chunk_result["transcriptions"][model_name] = result
-                        chunk_result["processing_times_ms"][model_name] = processing_time
+                        chunk_result["processing_times_ms"][model_name] = (
+                            processing_time
+                        )
                     except Exception as e:
                         processing_time = (time.time() - start_time) * 1000
-                        logger.exception(f"Error transcribing chunk {i} with {model_name}: {e}")
-                        chunk_result["transcriptions"][model_name] = {"text": "", "error": str(e)}
-                        chunk_result["processing_times_ms"][model_name] = processing_time
+                        logger.exception(
+                            f"Error transcribing chunk {i} with {model_name}: {e}"
+                        )
+                        chunk_result["transcriptions"][model_name] = {
+                            "text": "",
+                            "error": str(e),
+                        }
+                        chunk_result["processing_times_ms"][model_name] = (
+                            processing_time
+                        )
 
                 batch_results.append(chunk_result)
 
@@ -471,7 +560,9 @@ class ASRModelManager:
 
         return batch_results
 
-    async def transcribe_chunks_parallel(self, audio_chunks: List[bytes], model_names: List[str] = None) -> List[Dict[str, Any]]:
+    async def transcribe_chunks_parallel(
+        self, audio_chunks: List[bytes], model_names: List[str] = None
+    ) -> List[Dict[str, Any]]:
         if model_names is None:
             model_names = list(self.models.keys())
 
@@ -486,18 +577,29 @@ class ASRModelManager:
         for i, result in enumerate(results):
             if isinstance(result, Exception):
                 logger.exception(f"Error processing chunk {i}: {result}")
-                batch_results.append({
-                    "chunk_index": i,
-                    "transcriptions": {model: {"text": "", "error": str(result)} for model in model_names},
-                    "processing_times_ms": {model: 0 for model in model_names}
-                })
+                batch_results.append(
+                    {
+                        "chunk_index": i,
+                        "transcriptions": {
+                            model: {"text": "", "error": str(result)}
+                            for model in model_names
+                        },
+                        "processing_times_ms": {model: 0 for model in model_names},
+                    }
+                )
             else:
                 batch_results.append(result)
 
         return batch_results
 
-    async def _transcribe_single_chunk_parallel(self, chunk_index: int, audio_data: bytes, model_names: List[str]) -> Dict[str, Any]:
-        chunk_result = {"chunk_index": chunk_index, "transcriptions": {}, "processing_times_ms": {}}
+    async def _transcribe_single_chunk_parallel(
+        self, chunk_index: int, audio_data: bytes, model_names: List[str]
+    ) -> Dict[str, Any]:
+        chunk_result = {
+            "chunk_index": chunk_index,
+            "transcriptions": {},
+            "processing_times_ms": {},
+        }
 
         model_tasks = []
         for model_name in model_names:
@@ -506,29 +608,44 @@ class ASRModelManager:
             task = self._transcribe_with_model_timing(model_name, audio_data)
             model_tasks.append((model_name, task))
 
-        model_results = await asyncio.gather(*[task for _, task in model_tasks], return_exceptions=True)
+        model_results = await asyncio.gather(
+            *[task for _, task in model_tasks], return_exceptions=True
+        )
 
         for (model_name, _), result in zip(model_tasks, model_results):
             if isinstance(result, Exception):
-                chunk_result["transcriptions"][model_name] = {"text": "", "error": str(result)}
+                chunk_result["transcriptions"][model_name] = {
+                    "text": "",
+                    "error": str(result),
+                }
                 chunk_result["processing_times_ms"][model_name] = 0
             else:
                 chunk_result["transcriptions"][model_name] = result["transcription"]
-                chunk_result["processing_times_ms"][model_name] = result["processing_time_ms"]
+                chunk_result["processing_times_ms"][model_name] = result[
+                    "processing_time_ms"
+                ]
 
         return chunk_result
 
-    async def _transcribe_with_model_timing(self, model_name: str, audio_data: bytes) -> Dict[str, Any]:
+    async def _transcribe_with_model_timing(
+        self, model_name: str, audio_data: bytes
+    ) -> Dict[str, Any]:
         start_time = time.time()
         try:
             await self.ensure_model_loaded(model_name)
             transcription = await self.models[model_name].transcribe(audio_data)
             processing_time = (time.time() - start_time) * 1000
-            return {"transcription": transcription, "processing_time_ms": processing_time}
+            return {
+                "transcription": transcription,
+                "processing_time_ms": processing_time,
+            }
         except Exception as e:
             processing_time = (time.time() - start_time) * 1000
             logger.exception(f"Error transcribing with timing {model_name}: {e}")
-            return {"transcription": {"text": "", "error": str(e)}, "processing_time_ms": processing_time}
+            return {
+                "transcription": {"text": "", "error": str(e)},
+                "processing_time_ms": processing_time,
+            }
 
     def get_model(self, model_name: str) -> Optional[ASRModelBase]:
         return self.models.get(model_name)
@@ -543,27 +660,32 @@ class ASRModelManager:
                         torch.cuda.synchronize()
                     except Exception:
                         pass
-                logger.debug("CUDA cache cleared" + (" (aggressive)" if aggressive else ""))
+                logger.debug(
+                    "CUDA cache cleared" + (" (aggressive)" if aggressive else "")
+                )
 
             for model_name, model in self.models.items():
                 # try to clear pipeline caches if present
-                if hasattr(model, '_model') and model._model is not None:
-                    if hasattr(model._model, 'cache'):
+                if hasattr(model, "_model") and model._model is not None:
+                    if hasattr(model._model, "cache"):
                         try:
                             model._model.cache.clear()
                         except Exception:
                             pass
 
                 # clear internal attributes for our transformers wrapper
-                if hasattr(model, '_wf_model') and getattr(model, '_wf_model') is not None:
+                if (
+                    hasattr(model, "_wf_model")
+                    and getattr(model, "_wf_model") is not None
+                ):
                     # detach past_key_values if present
                     try:
-                        if hasattr(model._wf_model, 'past_key_values'):
+                        if hasattr(model._wf_model, "past_key_values"):
                             model._wf_model.past_key_values = None
                     except Exception:
                         pass
 
-                if aggressive and hasattr(model, 'unload_model'):
+                if aggressive and hasattr(model, "unload_model"):
                     try:
                         model.unload_model()
                         logger.debug(f"Aggressive cache clear: unloaded {model_name}")
@@ -571,7 +693,9 @@ class ASRModelManager:
                         logger.exception(f"Failed aggressive unload for {model_name}")
 
             gc.collect()
-            logger.debug("ASR model caches cleared" + (" (aggressive)" if aggressive else ""))
+            logger.debug(
+                "ASR model caches cleared" + (" (aggressive)" if aggressive else "")
+            )
         except Exception:
             logger.exception("Failed to clear caches")
 
@@ -580,7 +704,9 @@ class ASRModelManager:
             model_names = list(self.models.keys())
 
         for model_name in model_names:
-            if model_name in self.models and hasattr(self.models[model_name], 'unload_model'):
+            if model_name in self.models and hasattr(
+                self.models[model_name], "unload_model"
+            ):
                 try:
                     self.models[model_name].unload_model()
                     logger.debug(f"Temporarily unloaded model: {model_name}")
@@ -590,24 +716,32 @@ class ASRModelManager:
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-            logger.debug(f"VRAM after temporary unload: {torch.cuda.memory_allocated() / 1024**3:.2f}GB")
+            logger.debug(
+                f"VRAM after temporary unload: {torch.cuda.memory_allocated() / 1024**3:.2f}GB"
+            )
 
     def reload_models_if_needed(self, model_names: List[str] = None):
         if model_names is None:
             model_names = list(self.models.keys())
 
         for model_name in model_names:
-            if model_name in self.models and hasattr(self.models[model_name], 'is_loaded'):
+            if model_name in self.models and hasattr(
+                self.models[model_name], "is_loaded"
+            ):
                 try:
                     if not self.models[model_name].is_loaded():
                         # synchronous reload; could schedule async if desired
-                        if hasattr(self.models[model_name], 'ensure_loaded'):
+                        if hasattr(self.models[model_name], "ensure_loaded"):
                             # ensure_loaded may be async; run it in event loop if available
                             loop = asyncio.get_event_loop()
                             if loop.is_running():
-                                loop.create_task(self.models[model_name].ensure_loaded())
+                                loop.create_task(
+                                    self.models[model_name].ensure_loaded()
+                                )
                             else:
-                                loop.run_until_complete(self.models[model_name].ensure_loaded())
+                                loop.run_until_complete(
+                                    self.models[model_name].ensure_loaded()
+                                )
                         else:
                             self.models[model_name]._load_model()
                         logger.debug(f"Reloaded model: {model_name}")
@@ -617,9 +751,9 @@ class ASRModelManager:
     def unload_models(self):
         for model_name, model in self.models.items():
             try:
-                if hasattr(model, 'unload_model'):
+                if hasattr(model, "unload_model"):
                     model.unload_model()
-                elif hasattr(model, '_model') and model._model is not None:
+                elif hasattr(model, "_model") and model._model is not None:
                     del model._model
                     model._model = None
                     logger.debug(f"Unloaded model: {model_name}")
@@ -648,7 +782,11 @@ class ASRModelManager:
         memory_info = {"models_loaded": {}, "gpu_memory": {}, "system_memory": {}}
         try:
             for model_name, model in self.models.items():
-                memory_info["models_loaded"][model_name] = model.is_loaded() if hasattr(model, 'is_loaded') else (hasattr(model, '_model') and model._model is not None)
+                memory_info["models_loaded"][model_name] = (
+                    model.is_loaded()
+                    if hasattr(model, "is_loaded")
+                    else (hasattr(model, "_model") and model._model is not None)
+                )
 
             if torch.cuda.is_available():
                 memory_info["gpu_memory"] = {
@@ -656,16 +794,19 @@ class ASRModelManager:
                     "reserved_gb": torch.cuda.memory_reserved() / 1024**3,
                     "max_allocated_gb": torch.cuda.max_memory_allocated() / 1024**3,
                     "device_count": torch.cuda.device_count(),
-                    "device_name": torch.cuda.get_device_name(0) if torch.cuda.device_count() > 0 else "No GPU"
+                    "device_name": torch.cuda.get_device_name(0)
+                    if torch.cuda.device_count() > 0
+                    else "No GPU",
                 }
             else:
                 memory_info["gpu_memory"] = {"message": "CUDA not available"}
 
             import psutil
+
             memory_info["system_memory"] = {
                 "used_gb": psutil.virtual_memory().used / 1024**3,
                 "available_gb": psutil.virtual_memory().available / 1024**3,
-                "percent_used": psutil.virtual_memory().percent
+                "percent_used": psutil.virtual_memory().percent,
             }
         except Exception:
             logger.exception("Failed to gather memory usage")
@@ -679,8 +820,11 @@ class ASRModelManager:
             logger.info(f"  {model_name}: {status}")
         gpu = memory_info.get("gpu_memory", {})
         if "allocated_gb" in gpu:
-            logger.info(f"  GPU VRAM: {gpu['allocated_gb']:.2f}GB allocated, {gpu['reserved_gb']:.2f}GB reserved")
+            logger.info(
+                f"  GPU VRAM: {gpu['allocated_gb']:.2f}GB allocated, {gpu['reserved_gb']:.2f}GB reserved"
+            )
         sys_mem = memory_info.get("system_memory", {})
         if "used_gb" in sys_mem:
-            logger.info(f"  System RAM: {sys_mem['used_gb']:.2f}GB used ({sys_mem['percent_used']:.1f}%)")
-
+            logger.info(
+                f"  System RAM: {sys_mem['used_gb']:.2f}GB used ({sys_mem['percent_used']:.1f}%)"
+            )

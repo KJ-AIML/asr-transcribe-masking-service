@@ -104,10 +104,10 @@ class ProcessFile2ChooseModelUseCase:
                         logger.info(f"First chunk keys: {list(first_chunk.keys())}")
                         # Verify the expected structure
                         if "chunk_info" not in first_chunk:
-                            logger.warning(f"First chunk missing 'chunk_info' key")
+                            logger.warning("First chunk missing 'chunk_info' key")
                         if "model_transcriptions" not in first_chunk:
                             logger.warning(
-                                f"First chunk missing 'model_transcriptions' key"
+                                "First chunk missing 'model_transcriptions' key"
                             )
 
             if not chunk_dict:

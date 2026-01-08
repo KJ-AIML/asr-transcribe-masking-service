@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel
@@ -6,7 +6,6 @@ from pydantic import BaseModel
 from src.config.logs_config import get_logger
 from src.execution.actions.process_wav_file_action import ProcessWavFileAction
 from src.execution.usecases.process_wav_file_usecase import ProcessWavFileUseCase
-from src.models.transcription_models import transcription_memory
 
 router = APIRouter()
 logger = get_logger(__name__)

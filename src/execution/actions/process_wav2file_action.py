@@ -1,10 +1,14 @@
 import asyncio
 import gc
 import os
+import time
+import tempfile
+import multiprocessing as mp
 from datetime import datetime
 from typing import Any, Dict, List
 
 import psutil
+import torch
 
 from src.config.logs_config import get_logger
 from src.execution.actions.process_choose_model_action import ProcessChooseModelAction
@@ -13,9 +17,139 @@ from src.execution.actions.process_compare_chunk_wav_files_action import (
 )
 from src.models.asr_models import ASRModelManager
 from src.models.transcription_models import ChunkTranscription, transcription_memory
+from src.models.transcription_model_adapter import (
+    TranscriptionModelAdapter,
+    TyphoonAdapter,
+    WhisperAdapter,
+)
 from src.utils.audio.chunk_wav_audio import process_chunks_in_batches
 
 logger = get_logger(__name__)
+
+
+def _gpu_worker_process(
+    device: str,
+    assigned_models: List[str],
+    task_queue: mp.Queue,
+    result_queue: mp.Queue,
+) -> None:
+    """
+    Persistent GPU worker process for transcribing chunks
+
+    Each worker:
+    - Runs on a specific GPU device (or CPU)
+    - Loads only assigned models (saves VRAM)
+    - Continuously processes chunks from task_queue
+    - Sends results to result_queue
+    """
+    import asyncio
+
+    worker_start = time.time()
+    print(f"[GPU Worker {device}] Starting at {worker_start:.2f}")
+    print(f"[GPU Worker {device}] Assigned models: {assigned_models}")
+
+    try:
+        if device != "cpu":
+            torch.cuda.set_device(device)
+            print(f"[GPU Worker {device}] Set device to {device}")
+        else:
+            print(f"[GPU Worker {device}] Using CPU mode")
+
+        asr_manager = ASRModelManager(device=device)
+        adapter = TranscriptionModelAdapter()
+
+        for model_name in assigned_models:
+            if model_name == "typhoon":
+                adapter.register_adapter("typhoon", TyphoonAdapter(asr_manager))
+            elif model_name == "pathumma":
+                adapter.register_adapter(
+                    "pathumma", WhisperAdapter("pathumma", asr_manager)
+                )
+            elif model_name == "pathumma_noise":
+                adapter.register_adapter(
+                    "pathumma_noise", WhisperAdapter("pathumma_noise", asr_manager)
+                )
+
+        print(f"[GPU Worker {device}] Loaded models: {assigned_models}")
+        print(f"[GPU Worker {device}] Ready to process tasks")
+
+        chunks_processed = 0
+
+        while True:
+            task = task_queue.get()
+
+            if task is None:
+                print(f"[GPU Worker {device}] Received stop signal")
+                break
+
+            chunk_index, chunk_bytes, model_name, target_device = task
+            chunk_start = time.time()
+            print(f"[GPU Worker {device}] Processing chunk {chunk_index} with model {model_name} (assigned: {assigned_models})")
+
+            if model_name not in assigned_models:
+                print(f"[GPU Worker {device}] ERROR: Model {model_name} not in assigned models {assigned_models}")
+                result_queue.put((chunk_index, model_name, {}, 0, f"Model {model_name} not assigned to this worker"))
+                continue
+
+            try:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+                    tmp.write(chunk_bytes)
+                    audio_path = tmp.name
+
+                try:
+                    model_start = time.time()
+
+                    result = asyncio.run(
+                        adapter.transcribe_with_model(
+                            audio_path=audio_path,
+                            model_name=model_name,
+                            language="th",
+                        )
+                    )
+
+                    text_value = result.get("text", "")
+
+                    if model_name == "typhoon":
+                        transcription = {"text": [text_value], "error": None}
+                    else:
+                        transcription = {"text": text_value, "error": None}
+
+                    processing_time = (time.time() - model_start) * 1000
+
+                    result_queue.put(
+                        (chunk_index, model_name, transcription, processing_time, None)
+                    )
+                    chunks_processed += 1
+
+                    chunk_time = time.time() - chunk_start
+                    print(
+                        f"[GPU Worker {device}] Chunk {chunk_index} model {model_name} done in {chunk_time:.2f}s"
+                    )
+
+                finally:
+                    if os.path.exists(audio_path):
+                        os.unlink(audio_path)
+
+            except Exception as e:
+                print(
+                    f"[GPU Worker {device}] Error processing chunk {chunk_index} model {model_name}: {e}"
+                )
+                import traceback
+
+                traceback.print_exc()
+                result_queue.put((chunk_index, model_name, {}, 0, str(e)))
+
+        total_time = time.time() - worker_start
+        print(
+            f"[GPU Worker {device}] Stopping. Processed {chunks_processed} chunks in {total_time:.2f}s"
+        )
+
+    except Exception as e:
+        print(f"[GPU Worker {device}] Fatal error: {e}")
+        import traceback
+
+        traceback.print_exc()
+        result_queue.put((-1, {}, {}, f"Worker error: {str(e)}"))
 
 
 class ProcessWav2FileAction:
@@ -28,6 +162,12 @@ class ProcessWav2FileAction:
         self.max_concurrent_chunks = 9
         self.max_retries = 3
 
+        # Set multiprocessing start method for CUDA compatibility
+        try:
+            mp.set_start_method("spawn", force=True)
+            logger.info("Multiprocessing start method set to 'spawn'")
+        except RuntimeError as e:
+            logger.debug(f"Multiprocessing start method already set: {e}")
 
     async def _process_chunk_batch_with_transcription(
         self,
@@ -35,24 +175,162 @@ class ProcessWav2FileAction:
         chunk_meta_list: List[Dict[str, Any]],
         session_id: str,
     ) -> List[Dict[str, Any]]:
-        """Process a batch of audio chunks with transcription"""
+        """Process a batch of audio chunks with transcription using persistent GPU workers"""
         self._check_memory_usage()
         batch_results = []
 
+        # Detect available GPUs
+        gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        if gpu_count == 0:
+            logger.warning("No GPU available, falling back to CPU")
+            devices = ["cpu"]
+            gpu_model_mapping = {"cpu": ["typhoon", "pathumma", "pathumma_noise"]}
+        else:
+            devices = [f"cuda:{i}" for i in range(gpu_count)]
+            gpu_model_mapping = {}
+
+            # Model-per-GPU assignment (Option C)
+            # GPU 0: typhoon + pathumma_noise
+            # GPU 1: pathumma
+            if len(devices) >= 2:
+                gpu_model_mapping["cuda:0"] = ["typhoon", "pathumma_noise"]
+                gpu_model_mapping["cuda:1"] = ["pathumma"]
+                logger.info("Using 2-GPU model-per-GPU architecture:")
+                logger.info("  - cuda:0: typhoon, pathumma_noise")
+                logger.info("  - cuda:1: pathumma")
+            elif len(devices) == 1:
+                gpu_model_mapping["cuda:0"] = ["typhoon", "pathumma", "pathumma_noise"]
+                logger.info("Using single GPU with all models")
+
+        logger.info(f"Using {len(devices)} devices: {devices}")
+        logger.info(f"GPU model mapping: {gpu_model_mapping}")
+
+        all_model_names = ["typhoon", "pathumma", "pathumma_noise"]
+
         try:
-            # Transcribe chunks with all ASR models
-            transcription_results = await self.asr_manager.transcribe_chunks_parallel(
-                audio_chunks=chunk_bytes_list,
-                model_names=["typhoon", "pathumma", "pathumma_noise"],
+            result_queue = mp.Queue()
+            device_task_queues = {device: mp.Queue() for device in devices}
+            workers = []
+
+            # Start persistent GPU workers
+            worker_start = time.time()
+            for device in devices:
+                assigned_models = gpu_model_mapping.get(device, all_model_names)
+                task_queue = device_task_queues[device]
+
+                worker = mp.Process(
+                    target=_gpu_worker_process,
+                    args=(device, assigned_models, task_queue, result_queue),
+                )
+                worker.start()
+                workers.append(worker)
+                logger.info(
+                    f"Started GPU worker on {device} with models: {assigned_models}"
+                )
+
+            logger.info(
+                f"All {len(workers)} GPU workers started in {time.time() - worker_start:.2f}s"
             )
+
+            # Distribute model-specific tasks to device-specific queues
+            distribution_start = time.time()
+            task_count = 0
+
+            for i, chunk_bytes in enumerate(chunk_bytes_list):
+                chunk_meta = chunk_meta_list[i]
+                chunk_index = chunk_meta["chunk_index"]
+
+                # Create task for each model on its assigned device
+                for model_name in all_model_names:
+                    # Find device for this model
+                    device_for_model = None
+                    for device, models in gpu_model_mapping.items():
+                        if model_name in models:
+                            device_for_model = device
+                            break
+
+                    if device_for_model and device_for_model in device_task_queues:
+                        # Submit task: (chunk_index, chunk_bytes, model_name, target_device)
+                        task = (chunk_index, chunk_bytes, model_name, device_for_model)
+                        device_task_queues[device_for_model].put(task)
+                        task_count += 1
+                        logger.debug(
+                            f"Task distributed: chunk {chunk_index}, model {model_name} -> device {device_for_model}"
+                        )
+
+            # Send stop signals to all device-specific workers
+            for device in devices:
+                device_task_queues[device].put(None)
+
+            logger.info(
+                f"Distributed {task_count} model-specific tasks for {len(chunk_bytes_list)} chunks in {time.time() - distribution_start:.2f}s"
+            )
+
+            # Wait for all workers to complete
+            for worker in workers:
+                worker.join()
+
+            total_time = time.time() - worker_start
+            logger.info(f"GPU workers completed in {total_time:.2f}s")
+
+            # Collect results from queue
+            results_dict = {}
+            expected_results = len(chunk_bytes_list) * len(all_model_names)
+            collected_count = 0
+
+            while collected_count < expected_results:
+                try:
+                    chunk_index, model_name, transcription, processing_time, error = (
+                        result_queue.get(timeout=60)
+                    )
+
+                    # Initialize chunk result if not exists
+                    if chunk_index not in results_dict:
+                        results_dict[chunk_index] = {
+                            "transcriptions": {},
+                            "processing_times_ms": {},
+                            "error": None,
+                        }
+
+                    # Merge transcription result
+                    if error:
+                        results_dict[chunk_index]["error"] = error
+                        results_dict[chunk_index]["transcriptions"][model_name] = {
+                            "text": "" if model_name != "typhoon" else [],
+                            "error": error
+                        }
+                    else:
+                        results_dict[chunk_index]["transcriptions"][model_name] = transcription
+                        results_dict[chunk_index]["processing_times_ms"][model_name] = processing_time
+
+                    collected_count += 1
+                    logger.info(
+                        f"Collected result for chunk {chunk_index} model {model_name} ({collected_count}/{expected_results})"
+                    )
+
+                except Exception as e:
+                    logger.error(f"Error collecting results: {e}")
+                    break
+
+            logger.info(f"Collected all {collected_count} model-specific results")
 
             # Update session with transcription results
             session = transcription_memory.get_session(session_id)
             if session:
-                for i, (chunk_meta, trans_result) in enumerate(
-                    zip(chunk_meta_list, transcription_results)
-                ):
+                for i, chunk_meta in enumerate(chunk_meta_list):
                     chunk_index = chunk_meta["chunk_index"]
+
+                    if chunk_index not in results_dict:
+                        logger.warning(f"No result for chunk {chunk_index}")
+                        continue
+
+                    trans_result = results_dict[chunk_index]
+
+                    if trans_result["error"]:
+                        logger.error(
+                            f"Error transcribing chunk {chunk_index}: {trans_result['error']}"
+                        )
+                        continue
 
                     # Create/update chunk transcription
                     chunk_transcription = ChunkTranscription(
@@ -68,9 +346,11 @@ class ProcessWav2FileAction:
                     processing_times = trans_result["processing_times_ms"]
 
                     if "typhoon" in transcriptions:
-                        chunk_transcription.typhoon_transcript = transcriptions[
-                            "typhoon"
-                        ].get("text", "")
+                        typhoon_text = transcriptions["typhoon"].get("text", "")
+                        if isinstance(typhoon_text, list) and len(typhoon_text) > 0:
+                            chunk_transcription.typhoon_transcript = typhoon_text[0]
+                        else:
+                            chunk_transcription.typhoon_transcript = str(typhoon_text)
                         chunk_transcription.processing_time_ms["typhoon"] = (
                             processing_times.get("typhoon", 0)
                         )
@@ -171,23 +451,13 @@ class ProcessWav2FileAction:
         return batch_results
 
     def _check_memory_usage(self):
-        """Check current memory usage and log warnings if approaching limits"""
+        """Check current memory usage (disabled warning logs)"""
         try:
-            # Check RAM usage
             memory_info = self.process.memory_info()
-            memory_mb = memory_info.rss / 1024 / 1024
+            memory_info.rss / 1024 / 1024
 
-            if memory_mb > self.max_memory_mb * 0.8:
-                logger.warning(
-                    f"High RAM usage detected: {memory_mb:.1f}MB / {self.max_memory_mb}MB"
-                )
-            elif memory_mb > self.max_memory_mb * 0.9:
-                logger.error(
-                    f"Critical RAM usage: {memory_mb:.1f}MB / {self.max_memory_mb}MB"
-                )
-
-        except Exception as e:
-            logger.warning(f"Could not check memory usage: {e}")
+        except Exception:
+            pass
 
     def _cleanup_memory(self):
         """Force garbage collection and memory cleanup"""
@@ -195,12 +465,10 @@ class ProcessWav2FileAction:
             # Force garbage collection
             gc.collect()
 
-
             # Log memory after cleanup
             memory_info = self.process.memory_info()
             memory_mb = memory_info.rss / 1024 / 1024
             logger.debug(f"Memory after cleanup: {memory_mb:.1f}MB")
-
 
         except Exception as e:
             logger.warning(f"Memory cleanup failed: {e}")
@@ -496,29 +764,21 @@ class ProcessWav2FileAction:
             chunk_dict = {}
             for chunk_result in transcription_results:
                 chunk_id = chunk_result["chunk_index"]
+                
+                # Only include models that actually transcribed this chunk
+                model_transcriptions = {}
+                for model_name, trans_data in chunk_result["transcriptions"].items():
+                    model_transcriptions[model_name] = {
+                        "text": trans_data.get("text", "")
+                    }
+                
                 chunk_dict[chunk_id] = {
                     "chunk_info": {
                         "start_time": chunk_result["start_sec"],
                         "end_time": chunk_result["end_sec"],
                         "duration": chunk_result["duration_sec"],
                     },
-                    "model_transcriptions": {
-                        "typhoon": {
-                            "text": chunk_result["transcriptions"]
-                            .get("typhoon", {})
-                            .get("text", "")
-                        },
-                        "pathumma": {
-                            "text": chunk_result["transcriptions"]
-                            .get("pathumma", {})
-                            .get("text", "")
-                        },
-                        "pathumma_noise": {
-                            "text": chunk_result["transcriptions"]
-                            .get("pathumma_noise", {})
-                            .get("text", "")
-                        },
-                    },
+                    "model_transcriptions": model_transcriptions,
                 }
 
             # Sanitize transcription_results for response: keep only text/error per model

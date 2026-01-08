@@ -1,6 +1,7 @@
 from charset_normalizer import from_path
 import textwrap
 
+
 def read_markdown_file_with_dedent(file_path: str, dedent: bool = True) -> str:
     try:
         with open(file_path, "r", encoding="utf-8") as f:
