@@ -202,14 +202,15 @@ class ProcessWav2FileAction:
         all_model_names = ["typhoon", "pathumma", "pathumma_noise"]
 
         try:
-            task_queue = mp.Queue()
             result_queue = mp.Queue()
+            device_task_queues = {device: mp.Queue() for device in devices}
             workers = []
 
             # Start persistent GPU workers
             worker_start = time.time()
             for device in devices:
                 assigned_models = gpu_model_mapping.get(device, all_model_names)
+                task_queue = device_task_queues[device]
 
                 worker = mp.Process(
                     target=_gpu_worker_process,
@@ -225,7 +226,7 @@ class ProcessWav2FileAction:
                 f"All {len(workers)} GPU workers started in {time.time() - worker_start:.2f}s"
             )
 
-            # Distribute model-specific tasks to workers
+            # Distribute model-specific tasks to device-specific queues
             distribution_start = time.time()
             task_count = 0
 
@@ -242,15 +243,15 @@ class ProcessWav2FileAction:
                             device_for_model = device
                             break
 
-                    if device_for_model:
+                    if device_for_model and device_for_model in device_task_queues:
                         # Submit task: (chunk_index, chunk_bytes, model_name, target_device)
                         task = (chunk_index, chunk_bytes, model_name, device_for_model)
-                        task_queue.put(task)
+                        device_task_queues[device_for_model].put(task)
                         task_count += 1
 
-            # Send stop signals to workers
-            for _ in range(len(workers)):
-                task_queue.put(None)
+            # Send stop signals to all device-specific workers
+            for device in devices:
+                device_task_queues[device].put(None)
 
             logger.info(
                 f"Distributed {task_count} model-specific tasks for {len(chunk_bytes_list)} chunks in {time.time() - distribution_start:.2f}s"
