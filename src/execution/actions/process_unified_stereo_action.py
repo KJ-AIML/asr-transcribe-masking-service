@@ -153,8 +153,8 @@ def _mp_transcribe_chunked(
         wav_bytes=audio_bytes,
         target_sr=16_000,
         top_db=30.0,
-        min_speech_sec=0.5,
-        min_silence_sec=0.5,
+        min_speech_sec=0.25,
+        min_silence_sec=0.25,
         max_segment_sec=60.0,
         use_ml_vad=settings.USE_ML_VAD,
     )
