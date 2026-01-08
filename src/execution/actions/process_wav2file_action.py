@@ -82,9 +82,9 @@ def _gpu_worker_process(
                 print(f"[GPU Worker {device}] Received stop signal")
                 break
 
-            chunk_index, chunk_bytes, model_names = task
+            chunk_index, chunk_bytes, model_name, target_device = task
             chunk_start = time.time()
-            print(f"[GPU Worker {device}] Processing chunk {chunk_index}")
+            print(f"[GPU Worker {device}] Processing chunk {chunk_index} with model {model_name}")
 
             try:
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
@@ -92,36 +92,33 @@ def _gpu_worker_process(
                     audio_path = tmp.name
 
                 try:
-                    transcriptions = {}
-                    processing_times = {}
+                    model_start = time.time()
 
-                    for model_name in model_names:
-                        if model_name not in assigned_models:
-                            continue
-
-                        model_start = time.time()
-
-                        result = asyncio.run(
-                            adapter.transcribe_with_model(
-                                audio_path=audio_path,
-                                model_name=model_name,
-                                language="th",
-                            )
+                    result = asyncio.run(
+                        adapter.transcribe_with_model(
+                            audio_path=audio_path,
+                            model_name=model_name,
+                            language="th",
                         )
+                    )
 
-                        transcriptions[model_name] = {"text": result.get("text", "")}
-                        processing_times[model_name] = (
-                            time.time() - model_start
-                        ) * 1000
+                    text_value = result.get("text", "")
+
+                    if model_name == "typhoon":
+                        transcription = {"text": [text_value], "error": None}
+                    else:
+                        transcription = {"text": text_value, "error": None}
+
+                    processing_time = (time.time() - model_start) * 1000
 
                     result_queue.put(
-                        (chunk_index, transcriptions, processing_times, None)
+                        (chunk_index, model_name, transcription, processing_time, None)
                     )
                     chunks_processed += 1
 
                     chunk_time = time.time() - chunk_start
                     print(
-                        f"[GPU Worker {device}] Chunk {chunk_index} done in {chunk_time:.2f}s"
+                        f"[GPU Worker {device}] Chunk {chunk_index} model {model_name} done in {chunk_time:.2f}s"
                     )
 
                 finally:
@@ -130,12 +127,12 @@ def _gpu_worker_process(
 
             except Exception as e:
                 print(
-                    f"[GPU Worker {device}] Error processing chunk {chunk_index}: {e}"
+                    f"[GPU Worker {device}] Error processing chunk {chunk_index} model {model_name}: {e}"
                 )
                 import traceback
 
                 traceback.print_exc()
-                result_queue.put((chunk_index, {}, {}, str(e)))
+                result_queue.put((chunk_index, model_name, {}, 0, str(e)))
 
         total_time = time.time() - worker_start
         print(
@@ -228,25 +225,35 @@ class ProcessWav2FileAction:
                 f"All {len(workers)} GPU workers started in {time.time() - worker_start:.2f}s"
             )
 
-            # Distribute chunks to workers
+            # Distribute model-specific tasks to workers
             distribution_start = time.time()
+            task_count = 0
+
             for i, chunk_bytes in enumerate(chunk_bytes_list):
                 chunk_meta = chunk_meta_list[i]
                 chunk_index = chunk_meta["chunk_index"]
 
-                # Round-robin device assignment
-                device = devices[i % len(devices)]
+                # Create task for each model on its assigned device
+                for model_name in all_model_names:
+                    # Find device for this model
+                    device_for_model = None
+                    for device, models in gpu_model_mapping.items():
+                        if model_name in models:
+                            device_for_model = device
+                            break
 
-                # Submit task
-                task = (chunk_index, chunk_bytes, all_model_names)
-                task_queue.put(task)
+                    if device_for_model:
+                        # Submit task: (chunk_index, chunk_bytes, model_name, target_device)
+                        task = (chunk_index, chunk_bytes, model_name, device_for_model)
+                        task_queue.put(task)
+                        task_count += 1
 
             # Send stop signals to workers
             for _ in range(len(workers)):
                 task_queue.put(None)
 
             logger.info(
-                f"Distributed {len(chunk_bytes_list)} chunks in {time.time() - distribution_start:.2f}s"
+                f"Distributed {task_count} model-specific tasks for {len(chunk_bytes_list)} chunks in {time.time() - distribution_start:.2f}s"
             )
 
             # Wait for all workers to complete
@@ -258,20 +265,16 @@ class ProcessWav2FileAction:
 
             # Collect results from queue
             results_dict = {}
-            expected_chunks = len(chunk_bytes_list)
+            expected_results = len(chunk_bytes_list) * len(all_model_names)
             collected_count = 0
 
-            while collected_count < expected_chunks:
+            while collected_count < expected_results:
                 try:
-                    chunk_index, transcriptions, processing_times, error = (
-                        result_queue.get(timeout=30)
+                    chunk_index, model_name, transcription, processing_time, error = (
+                        result_queue.get(timeout=60)
                     )
 
-                    if chunk_index == -1:
-                        logger.error(f"Worker error: {error}")
-                        continue
-
-                    # Merge results from different workers for the same chunk
+                    # Initialize chunk result if not exists
                     if chunk_index not in results_dict:
                         results_dict[chunk_index] = {
                             "transcriptions": {},
@@ -279,23 +282,27 @@ class ProcessWav2FileAction:
                             "error": None,
                         }
 
-                    # Merge transcriptions and processing times
-                    results_dict[chunk_index]["transcriptions"].update(transcriptions)
-                    results_dict[chunk_index]["processing_times_ms"].update(
-                        processing_times
-                    )
-                    results_dict[chunk_index]["error"] = error
+                    # Merge transcription result
+                    if error:
+                        results_dict[chunk_index]["error"] = error
+                        results_dict[chunk_index]["transcriptions"][model_name] = {
+                            "text": "" if model_name != "typhoon" else [],
+                            "error": error
+                        }
+                    else:
+                        results_dict[chunk_index]["transcriptions"][model_name] = transcription
+                        results_dict[chunk_index]["processing_times_ms"][model_name] = processing_time
 
                     collected_count += 1
                     logger.info(
-                        f"Collected result for chunk {chunk_index} ({collected_count}/{expected_chunks})"
+                        f"Collected result for chunk {chunk_index} model {model_name} ({collected_count}/{expected_results})"
                     )
 
                 except Exception as e:
                     logger.error(f"Error collecting results: {e}")
                     break
 
-            logger.info(f"Collected all {collected_count} chunk results")
+            logger.info(f"Collected all {collected_count} model-specific results")
 
             # Update session with transcription results
             session = transcription_memory.get_session(session_id)
@@ -329,9 +336,11 @@ class ProcessWav2FileAction:
                     processing_times = trans_result["processing_times_ms"]
 
                     if "typhoon" in transcriptions:
-                        chunk_transcription.typhoon_transcript = transcriptions[
-                            "typhoon"
-                        ].get("text", "")
+                        typhoon_text = transcriptions["typhoon"].get("text", "")
+                        if isinstance(typhoon_text, list) and len(typhoon_text) > 0:
+                            chunk_transcription.typhoon_transcript = typhoon_text[0]
+                        else:
+                            chunk_transcription.typhoon_transcript = str(typhoon_text)
                         chunk_transcription.processing_time_ms["typhoon"] = (
                             processing_times.get("typhoon", 0)
                         )

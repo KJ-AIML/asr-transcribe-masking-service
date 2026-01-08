@@ -134,7 +134,7 @@ class TranscriptionSession:
             "total_model_transcriptions": total_models,
             "completed_model_transcriptions": completed_models,
             "progress_percentage": self.progress_percentage,
-            "models_used": ["typhoon", "pathumma", "whisper"],
+            "models_used": ["typhoon", "pathumma", "pathumma_noise"],
             "session_duration_sec": self._calculate_session_duration(),
         }
 
