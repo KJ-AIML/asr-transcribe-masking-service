@@ -319,6 +319,11 @@ class ProcessTranscriptUseCase:
                         # ส่งเข้า workflow
                         workflow_result = await self.action.execute(original_chunk)
 
+                        # Check if workflow failed (status == "failed")
+                        if workflow_result.get("status") == "failed":
+                            error_msg = workflow_result.get("error", "Unknown error")
+                            raise Exception(f"Workflow execution failed: {error_msg}")
+
                         # เช็คผลลัพธ์
                         has_credit_card = self._has_credit_card_data(workflow_result)
 
