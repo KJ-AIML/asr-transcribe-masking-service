@@ -42,6 +42,7 @@ class ProcessWavFileAction:
             transcription_results = await self.asr_manager.transcribe_chunks_parallel(
                 audio_chunks=chunk_bytes_list,
                 model_names=["typhoon", "pathumma", "pathumma_noise"],
+                language="th",
             )
 
             # Update session with transcription results
