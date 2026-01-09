@@ -38,14 +38,27 @@ class ProcessFile2ChooseModelUseCase:
             # The wav2file action returns chunk_dict directly
             chunk_dict = None
 
-            # First try the most common structure - chunk_dict at the root level
-            if "chunk_dict" in json_data and isinstance(json_data["chunk_dict"], dict):
+            # First try: file_info.chunk_processing.chunk_dict (from wav2file output)
+            if (
+                "file_info" in json_data
+                and isinstance(json_data["file_info"], dict)
+                and "chunk_processing" in json_data["file_info"]
+                and isinstance(json_data["file_info"]["chunk_processing"], dict)
+                and "chunk_dict" in json_data["file_info"]["chunk_processing"]
+            ):
+                chunk_dict = json_data["file_info"]["chunk_processing"]["chunk_dict"]
+                logger.info(
+                    f"Found chunk_dict at file_info.chunk_processing with {len(chunk_dict)} chunks"
+                )
+
+            # Second try: chunk_dict at the root level
+            elif "chunk_dict" in json_data and isinstance(json_data["chunk_dict"], dict):
                 chunk_dict = json_data["chunk_dict"]
                 logger.info(
                     f"Found chunk_dict at root level with {len(chunk_dict)} chunks"
                 )
 
-            # If not found, try the nested structure (older format)
+            # Third try: chunk_processing.chunk_dict (older format)
             elif "chunk_processing" in json_data:
                 chunk_processing = json_data["chunk_processing"]
                 if (
