@@ -424,14 +424,14 @@ class ProcessTranscriptUseCase:
 
             async def process_batch_reverify(i, chunk_data):
                 async with re_verify_semaphore:
-                    retries = 3
+                    retries = 5
                     base_delay = 3.0
                     chunk_id = chunk_data["chunk_id"]
 
-                    for attempt in range(retries + 1):
+                    for attempt in range(retries):
                         try:
                             logger.info(
-                                f"Processing batch chunk {chunk_id} ({len(chunk_data['detections'])} detections) (Attempt {attempt + 1})"
+                                f"Processing batch chunk {chunk_id} ({len(chunk_data['detections'])} detections) (Attempt {attempt + 1}/{retries})"
                             )
 
                             # Prepare batch input
@@ -447,6 +447,13 @@ class ProcessTranscriptUseCase:
                             batch_result = await self.re_verify_action.execute(
                                 batch_input
                             )
+                            
+                            # Check if re-verify failed and trigger retry
+                            if batch_result.get("status") == "failed":
+                                raise Exception(
+                                    f"Re-verify workflow failed: {batch_result.get('error', 'Unknown error')}"
+                                )
+                            
                             logger.info(
                                 f"Batch Re-Verify completed for chunk {chunk_id}"
                             )
@@ -494,15 +501,15 @@ class ProcessTranscriptUseCase:
                             return mapped_results
 
                         except Exception as e:
-                            if attempt < retries:
+                            if attempt < retries - 1:
                                 delay = base_delay * (2**attempt)
                                 logger.warning(
-                                    f"Batch Re-Verify chunk {chunk_id} failed (Attempt {attempt + 1}/{retries + 1}): {str(e)}. Retrying in {delay}s..."
+                                    f"Batch Re-Verify chunk {chunk_id} failed (Attempt {attempt + 1}/{retries}): {str(e)}. Retrying in {delay}s..."
                                 )
                                 await asyncio.sleep(delay)
                             else:
                                 logger.error(
-                                    f"Batch Re-Verify failed for chunk {chunk_id} after {retries + 1} attempts: {str(e)}"
+                                    f"Batch Re-Verify failed for chunk {chunk_id} after {retries} attempts: {str(e)}"
                                 )
                                 # Return error results for all detections in this chunk
                                 return [
