@@ -556,32 +556,32 @@ class ProcessTranscriptUseCase:
             f"Re-Verify complete: {result['re_verify_summary']['successful_re_verifies']}/{result['re_verify_summary']['processed_detections']} detections processed"
         )
 
-        # Process each chunk as a batch
-        # Masker process
-        if (
-            self.masker_action
-            and result["re_verify_summary"]["processed_detections"] > 0
-        ):
-            logger.info("Starting Masker process for re-verified detections")
+        # # Process each chunk as a batch
+        # # Masker process
+        # if (
+        #     self.masker_action
+        #     and result["re_verify_summary"]["processed_detections"] > 0
+        # ):
+        #     logger.info("Starting Masker process for re-verified detections")
 
-            # Prepare input for masker action
-            masker_input = {
-                "transcript": transcript_data.get("text", ""),
-                "re_verify_results": result["re_verify_results"],
-            }
+            # # Prepare input for masker action
+            # masker_input = {
+            #     "transcript": transcript_data.get("text", ""),
+            #     "re_verify_results": result["re_verify_results"],
+            # }
 
-            # Execute masker action
-            masker_result = await self.masker_action.execute(masker_input)
+            # # Execute masker action
+            # masker_result = await self.masker_action.execute(masker_input)
 
-            # Add masker results to final result
-            result["masker_result"] = masker_result
-            result["original_transcript"] = transcript_data.get("text", "")
-            result["masked_transcript"] = masker_result.get("masked_transcript", "")
-            result["masker_summary"] = masker_result.get("masking_summary", {})
+            # # Add masker results to final result
+            # result["masker_result"] = masker_result
+            # result["original_transcript"] = transcript_data.get("text", "")
+            # result["masked_transcript"] = masker_result.get("masked_transcript", "")
+            # result["masker_summary"] = masker_result.get("masking_summary", {})
 
-            logger.info(
-                f"Masker process completed: {result['masker_summary'].get('total_detections_masked', 0)} detections masked"
-            )
+            # logger.info(
+            #     f"Masker process completed: {result['masker_summary'].get('total_detections_masked', 0)} detections masked"
+            # )
 
         return result
 
