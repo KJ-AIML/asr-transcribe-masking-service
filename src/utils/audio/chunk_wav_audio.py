@@ -25,17 +25,19 @@ def _load_silero_vad():
     return _silero_vad_model, _silero_vad_get_speech_timestamps
 
 
-def _load_ten_vad():
-    """Load TEN VAD model (lightweight, high-performance VAD)"""
-    global _ten_vad_model
-    if _ten_vad_model is not None:
-        return _ten_vad_model
+def _load_ten_vad(threshold: float = 0.5):
+    """Load TEN VAD model (lightweight, high-performance VAD)
 
+    Args:
+        threshold: VAD threshold (0-1), default 0.5
+    """
+    global _ten_vad_model
+    # Recreate if threshold might have changed (simple approach: always create new)
     try:
         from ten_vad import TenVad
 
-        _ten_vad_model = TenVad()
-        logger.info("TEN VAD model loaded successfully")
+        _ten_vad_model = TenVad(threshold=threshold)
+        logger.info(f"TEN VAD model loaded with threshold={threshold}")
         return _ten_vad_model
     except ImportError:
         logger.error("ten-vad not installed, run: pip install ten-vad")
@@ -289,7 +291,8 @@ def vad_segment_audio_bytes(
     min_silence_sec: float = 0.3,
     max_segment_sec: float = 60.0,
     use_ml_vad: bool = False,
-    vad_engine: str = "silero",  # Options: "silero", "ten"
+    vad_engine: str = "ten",  # Options: "silero", "ten"
+    vad_threshold: float = 0.25,  # TEN VAD threshold (0-1)
 ) -> Dict[str, Any]:
     try:
         buffer = io.BytesIO(wav_bytes)
@@ -310,7 +313,7 @@ def vad_segment_audio_bytes(
             try:
                 if vad_engine == "ten":
                     # Use TEN VAD (lightweight, high-performance)
-                    ten_vad = _load_ten_vad()
+                    ten_vad = _load_ten_vad(threshold=vad_threshold)
                     # TEN VAD expects 16kHz audio
                     # Convert numpy array to int16 for TEN VAD
                     audio_int16 = (y * 32767).astype(np.int16)

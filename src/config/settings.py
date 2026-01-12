@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     # VAD / audio processing
     USE_ML_VAD: bool = False
     VAD_ENGINE: str = "ten"  # Options: "silero", "ten"
+    VAD_TENVAD_THRESHOLD: float = 0.25
+    VAD_MIN_SPEECH_DURATION: float = 0.25
+    MIN_SILENCE_DURATION: float = 0.2
 
     # Server Configuration
     SERVER_PORT: int = 3000
