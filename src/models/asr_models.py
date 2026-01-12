@@ -50,7 +50,9 @@ class ASRModelBase:
     def _load_model(self):
         raise NotImplementedError
 
-    async def transcribe(self, audio_data: bytes, language: str = "th") -> Dict[str, Any]:
+    async def transcribe(
+        self, audio_data: bytes, language: str = "th"
+    ) -> Dict[str, Any]:
         raise NotImplementedError
 
     def unload_model(self):
@@ -91,7 +93,10 @@ class TyphoonASR(ASRModelBase):
             if not self._model_loaded:
                 # consider running in executor if import is slow
                 self._load_model()
-    async def transcribe(self, audio_data: bytes, language: str = "th") -> Dict[str, Any]:
+
+    async def transcribe(
+        self, audio_data: bytes, language: str = "th"
+    ) -> Dict[str, Any]:
         if self._transcribe_fn is None:
             try:
                 await self.ensure_loaded()
@@ -172,13 +177,17 @@ class PathummaASR(ASRModelBase):
         self._model_loaded = False
         self._processor: Optional[WhisperProcessor] = None
         self._wf_model: Optional[WhisperForConditionalGeneration] = None
-        self._forced_decoder_ids = None
         self._load_lock = asyncio.Lock()
         self._transcribe_lock = asyncio.Lock()
         self.num_beams = 1
         self.max_new_tokens = 256
         # safe chunk <= 30 sec (use 25 by default)
         self.chunk_sec = min(25, chunk_sec)
+        # Anti-repetition parameters
+        self.no_repeat_ngram_size = 3
+        self.repetition_penalty = 1.2
+        # Cached suppress tokens for non-Thai characters (computed lazily)
+        self._suppress_tokens: Optional[List[int]] = None
 
     def _download_local_model(self) -> str:
         """Ensure model cached locally and return local path. Uses huggingface_hub snapshot_download.
@@ -222,16 +231,6 @@ class PathummaASR(ASRModelBase):
 
         self._processor = WhisperProcessor.from_pretrained(local_model_path)
 
-        try:
-            self._forced_decoder_ids = self._processor.get_decoder_prompt_ids(
-                language=self.lang, task=self.task
-            )
-        except Exception:
-            logger.exception(
-                "Failed to compute forced_decoder_ids; will use default decoding"
-            )
-            self._forced_decoder_ids = None
-
         self._wf_model = WhisperForConditionalGeneration.from_pretrained(
             local_model_path,
             torch_dtype=self.torch_dtype,
@@ -254,15 +253,7 @@ class PathummaASR(ASRModelBase):
             self._wf_model.generation_config.use_cache = False
             self._wf_model.generation_config.task = self.task
             self._wf_model.generation_config.num_beams = self.num_beams
-            if self._forced_decoder_ids is not None:
-                try:
-                    self._wf_model.generation_config.forced_decoder_ids = (
-                        self._forced_decoder_ids
-                    )
-                except Exception:
-                    logger.exception(
-                        "Failed to set forced_decoder_ids on generation_config"
-                    )
+            # Note: We use language parameter directly in generate() instead of forced_decoder_ids
         except Exception:
             logger.debug("Failed to set generation_config - fine.")
 
@@ -273,6 +264,57 @@ class PathummaASR(ASRModelBase):
 
         self._model_loaded = True
         logger.info("Pathumma model loaded (transformers style)")
+
+    def _get_suppress_tokens(self) -> List[int]:
+        """Get token IDs to suppress (non-Thai characters like Chinese/Japanese/Korean).
+
+        This helps prevent the model from generating characters from other Asian languages
+        when transcribing Thai audio.
+        """
+        if self._suppress_tokens is not None:
+            return self._suppress_tokens
+
+        if self._processor is None:
+            return []
+
+        try:
+            tokenizer = self._processor.tokenizer
+            suppress_ids = []
+
+            # Suppress common non-Thai character ranges:
+            # - Chinese: \u4e00-\u9fff (CJK Unified Ideographs)
+            # - Japanese Hiragana: \u3040-\u309f
+            # - Japanese Katakana: \u30a0-\u30ff
+            # - Korean Hangul: \uac00-\ud7af
+            for token, token_id in tokenizer.get_vocab().items():
+                for c in token:
+                    code = ord(c)
+                    # Chinese characters
+                    if 0x4E00 <= code <= 0x9FFF:
+                        suppress_ids.append(token_id)
+                        break
+                    # Japanese Hiragana/Katakana
+                    elif 0x3040 <= code <= 0x30FF:
+                        suppress_ids.append(token_id)
+                        break
+                    # Korean Hangul
+                    elif 0xAC00 <= code <= 0xD7AF:
+                        suppress_ids.append(token_id)
+                        break
+
+            # Deduplicate and limit to avoid memory issues
+            suppress_ids = list(set(suppress_ids))
+            if len(suppress_ids) > 1000:
+                suppress_ids = suppress_ids[:1000]
+
+            self._suppress_tokens = suppress_ids
+            logger.info(
+                f"Computed {len(self._suppress_tokens)} suppress tokens for non-Thai characters"
+            )
+            return self._suppress_tokens
+        except Exception as e:
+            logger.warning(f"Failed to compute suppress tokens: {e}")
+            return []
 
     async def ensure_loaded(self):
         async with self._load_lock:
@@ -330,10 +372,18 @@ class PathummaASR(ASRModelBase):
                     "attention_mask": attention_mask,
                     "max_new_tokens": self.max_new_tokens,
                     "num_beams": self.num_beams,
+                    # Anti-repetition parameters
+                    "no_repeat_ngram_size": self.no_repeat_ngram_size,
+                    "repetition_penalty": self.repetition_penalty,
+                    # Direct language forcing (like transformers pipeline)
+                    "language": self.lang,
+                    "task": self.task,
                 }
 
-                if self._forced_decoder_ids is not None:
-                    generate_kwargs["forced_decoder_ids"] = self._forced_decoder_ids
+                # Suppress non-Thai characters (Chinese/Japanese/Korean)
+                suppress_tokens = self._get_suppress_tokens()
+                if suppress_tokens:
+                    generate_kwargs["suppress_tokens"] = suppress_tokens
 
                 generated = self._wf_model.generate(
                     input_features,
@@ -351,30 +401,19 @@ class PathummaASR(ASRModelBase):
 
         return " ".join(results)
 
-    async def transcribe(self, audio_data: bytes, language: str = "th") -> Dict[str, Any]:
+    async def transcribe(
+        self, audio_data: bytes, language: str = "th"
+    ) -> Dict[str, Any]:
         logger.info(
             f"PathummaASR.transcribe() called on device: {self.device}, audio size: {len(audio_data)} bytes, language: {language}"
         )
-        
+
         if language != self.lang:
-            logger.info(f"Language changed from {self.lang} to {language}, updating forced_decoder_ids")
+            logger.info(f"Language changed from {self.lang} to {language}")
             self.lang = language
-            if self._processor is not None:
-                try:
-                    self._forced_decoder_ids = self._processor.get_decoder_prompt_ids(
-                        language=self.lang, task=self.task
-                    )
-                    if self._forced_decoder_ids is not None:
-                        try:
-                            self._wf_model.generation_config.forced_decoder_ids = (
-                                self._forced_decoder_ids
-                            )
-                        except Exception:
-                            logger.exception("Failed to set forced_decoder_ids on generation_config")
-                except Exception:
-                    logger.exception("Failed to compute forced_decoder_ids for new language")
-                    self._forced_decoder_ids = None
-        
+            # Clear cached suppress tokens since language changed
+            self._suppress_tokens = None
+
         await self.ensure_loaded()
         logger.info("Model loaded on device, starting transcription...")
 
@@ -545,7 +584,9 @@ class ASRModelManager:
                     start_time = time.time()
                     try:
                         await self.ensure_model_loaded(model_name)
-                        result = await self.models[model_name].transcribe(audio_data, language)
+                        result = await self.models[model_name].transcribe(
+                            audio_data, language
+                        )
                         processing_time = (time.time() - start_time) * 1000
                         chunk_result["transcriptions"][model_name] = result
                         chunk_result["processing_times_ms"][model_name] = (
@@ -581,14 +622,19 @@ class ASRModelManager:
         return batch_results
 
     async def transcribe_chunks_parallel(
-        self, audio_chunks: List[bytes], model_names: List[str] = None, language: str = "th"
+        self,
+        audio_chunks: List[bytes],
+        model_names: List[str] = None,
+        language: str = "th",
     ) -> List[Dict[str, Any]]:
         if model_names is None:
             model_names = list(self.models.keys())
 
         tasks = []
         for i, audio_data in enumerate(audio_chunks):
-            task = self._transcribe_single_chunk_parallel(i, audio_data, model_names, language)
+            task = self._transcribe_single_chunk_parallel(
+                i, audio_data, model_names, language
+            )
             tasks.append(task)
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -613,7 +659,11 @@ class ASRModelManager:
         return batch_results
 
     async def _transcribe_single_chunk_parallel(
-        self, chunk_index: int, audio_data: bytes, model_names: List[str], language: str = "th"
+        self,
+        chunk_index: int,
+        audio_data: bytes,
+        model_names: List[str],
+        language: str = "th",
     ) -> Dict[str, Any]:
         chunk_result = {
             "chunk_index": chunk_index,
@@ -653,7 +703,9 @@ class ASRModelManager:
         start_time = time.time()
         try:
             await self.ensure_model_loaded(model_name)
-            transcription = await self.models[model_name].transcribe(audio_data, language)
+            transcription = await self.models[model_name].transcribe(
+                audio_data, language
+            )
             processing_time = (time.time() - start_time) * 1000
             return {
                 "transcription": transcription,
