@@ -285,11 +285,11 @@ class PathummaASR(ASRModelBase):
                     compression_ratio_threshold=2.4,
                 )
 
-            # Extract words from all segments
-            all_words = []
+            # Extract words from all segments (raw tokens)
+            raw_tokens = []
             for segment in result.get("segments", []):
                 for word_info in segment.get("words", []):
-                    all_words.append(
+                    raw_tokens.append(
                         {
                             "word": word_info.get("text", ""),
                             "start": word_info.get("start", 0.0),
@@ -298,11 +298,20 @@ class PathummaASR(ASRModelBase):
                         }
                     )
 
-            # Full text
-            full_text = result.get("text", "")
+            # Merge tokens into proper Thai words using PyThaiNLP
+            from src.utils.transcript.thai_word_merger import merge_tokens_to_thai_words
+
+            all_words = merge_tokens_to_thai_words(raw_tokens)
+
+            # Full text from merged words
+            full_text = (
+                "".join(w.get("word", "") for w in all_words)
+                if all_words
+                else result.get("text", "")
+            )
 
             logger.info(
-                f"Transcription completed, text length: {len(full_text)}, words: {len(all_words)}"
+                f"Transcription completed, raw tokens: {len(raw_tokens)}, merged words: {len(all_words)}"
             )
 
             return {
