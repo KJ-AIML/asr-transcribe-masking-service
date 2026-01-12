@@ -25,19 +25,21 @@ def _load_silero_vad():
     return _silero_vad_model, _silero_vad_get_speech_timestamps
 
 
-def _load_ten_vad(threshold: float = 0.5):
+def _load_ten_vad(threshold: float = 0.3, hop_size: int = 256):
     """Load TEN VAD model (lightweight, high-performance VAD)
 
     Args:
-        threshold: VAD threshold (0-1), default 0.5
+        threshold: VAD threshold (0-1), default 0.3
+        hop_size: Frame hop size, default 256 (Typhoon BE default)
     """
     global _ten_vad_model
-    # Recreate if threshold might have changed (simple approach: always create new)
     try:
         from ten_vad import TenVad
 
-        _ten_vad_model = TenVad(threshold=threshold)
-        logger.info(f"TEN VAD model loaded with threshold={threshold}")
+        _ten_vad_model = TenVad(hop_size=hop_size, threshold=threshold)
+        logger.info(
+            f"TEN VAD model loaded with threshold={threshold}, hop_size={hop_size}"
+        )
         return _ten_vad_model
     except ImportError:
         logger.error("ten-vad not installed, run: pip install ten-vad")
@@ -292,7 +294,9 @@ def vad_segment_audio_bytes(
     max_segment_sec: float = 60.0,
     use_ml_vad: bool = False,
     vad_engine: str = "ten",  # Options: "silero", "ten"
-    vad_threshold: float = 0.25,  # TEN VAD threshold (0-1)
+    vad_threshold: float = 0.3,  # TEN VAD threshold (0-1)
+    vad_hop_size: int = 256,  # TEN VAD hop size
+    vad_padding: float = 0.1,  # Padding around speech regions (seconds)
 ) -> Dict[str, Any]:
     try:
         buffer = io.BytesIO(wav_bytes)
@@ -312,57 +316,120 @@ def vad_segment_audio_bytes(
         if use_ml_vad:
             try:
                 if vad_engine == "ten":
-                    # Use TEN VAD (lightweight, high-performance)
-                    ten_vad = _load_ten_vad(threshold=vad_threshold)
-                    # TEN VAD expects 16kHz audio
-                    # Convert numpy array to int16 for TEN VAD
-                    audio_int16 = (y * 32767).astype(np.int16)
+                    # Use TEN VAD with hop_size (Typhoon BE approach)
+                    ten_vad = _load_ten_vad(
+                        threshold=vad_threshold, hop_size=vad_hop_size
+                    )
 
-                    # Process in frames (10ms per frame at 16kHz = 160 samples)
-                    frame_size = 160
-                    is_speech_list = []
+                    # Convert to int16 for TEN VAD
+                    scaled = np.clip(y, -1.0, 1.0)
+                    audio_int16 = np.round(scaled * 32767).astype(np.int16)
 
-                    for i in range(0, len(audio_int16), frame_size):
-                        frame = audio_int16[i : i + frame_size]
-                        if len(frame) < frame_size:
-                            # Pad last frame if needed
-                            frame = np.pad(frame, (0, frame_size - len(frame)))
-                        is_speech = ten_vad.process(frame.tobytes())
-                        is_speech_list.append(is_speech)
+                    # Calculate frame count
+                    hop = vad_hop_size
+                    frame_count = int(np.ceil(len(audio_int16) / float(hop)))
+                    if frame_count <= 0:
+                        return {
+                            "sample_rate": sr,
+                            "total_duration_sec": total_duration,
+                            "segments": [],
+                        }
 
-                    # Convert speech flags to segments
-                    in_speech = False
-                    speech_start = 0
-                    for i, is_speech in enumerate(is_speech_list):
-                        sample_pos = i * frame_size
-                        if is_speech and not in_speech:
-                            # Speech started
-                            in_speech = True
-                            speech_start = sample_pos
-                        elif not is_speech and in_speech:
-                            # Speech ended
-                            in_speech = False
-                            speech_end = sample_pos
-                            duration_sec = (speech_end - speech_start) / sr
-                            if duration_sec >= min_speech_sec:
-                                if duration_sec <= max_segment_sec:
-                                    segments_samples.append((speech_start, speech_end))
-                                else:
-                                    # Split long segments
-                                    max_samples = int(max_segment_sec * sr)
-                                    current = speech_start
-                                    while current < speech_end:
-                                        seg_end = min(current + max_samples, speech_end)
-                                        if seg_end > current:
-                                            segments_samples.append((current, seg_end))
-                                        current = seg_end
+                    # Pad audio if needed
+                    padded_length = frame_count * hop
+                    if padded_length != len(audio_int16):
+                        audio_int16 = np.pad(
+                            audio_int16, (0, padded_length - len(audio_int16))
+                        )
+
+                    # Process frames and collect speech flags
+                    frame_bounds: List[Tuple[float, float]] = []
+                    speech_flags: List[bool] = []
+
+                    for idx in range(frame_count):
+                        start_time = idx * hop / float(sr)
+                        if start_time >= total_duration:
+                            break
+                        end_time = min(total_duration, (idx + 1) * hop / float(sr))
+
+                        frame = audio_int16[idx * hop : (idx + 1) * hop]
+                        _, is_speech = ten_vad.process(frame)
+                        speech_flags.append(bool(is_speech))
+                        frame_bounds.append((start_time, end_time))
+
+                    # Convert frames to speech regions with min_speech and min_silence filtering
+                    regions: List[Tuple[float, float]] = []
+                    current_start: float | None = None
+                    last_speech_end: float | None = None
+
+                    for (frame_start, frame_end), is_speech in zip(
+                        frame_bounds, speech_flags
+                    ):
+                        if is_speech:
+                            if current_start is None:
+                                current_start = frame_start
+                            last_speech_end = max(
+                                last_speech_end or frame_end, frame_end
+                            )
+                            continue
+
+                        if current_start is None or last_speech_end is None:
+                            continue
+
+                        # Check if silence gap is long enough to split
+                        gap = max(0.0, frame_start - last_speech_end)
+                        if gap >= min_silence_sec:
+                            duration = last_speech_end - current_start
+                            if duration >= min_speech_sec:
+                                # Apply padding
+                                padded_start = max(0.0, current_start - vad_padding)
+                                padded_end = min(
+                                    total_duration, last_speech_end + vad_padding
+                                )
+                                regions.append((padded_start, padded_end))
+                            current_start = None
+                            last_speech_end = None
 
                     # Handle speech at end of audio
-                    if in_speech:
-                        speech_end = len(y)
-                        duration_sec = (speech_end - speech_start) / sr
-                        if duration_sec >= min_speech_sec:
-                            segments_samples.append((speech_start, speech_end))
+                    if current_start is not None and last_speech_end is not None:
+                        duration = last_speech_end - current_start
+                        if duration >= min_speech_sec:
+                            padded_start = max(0.0, current_start - vad_padding)
+                            padded_end = min(
+                                total_duration, last_speech_end + vad_padding
+                            )
+                            regions.append((padded_start, padded_end))
+
+                    # Merge overlapping regions
+                    if regions:
+                        regions = sorted(regions, key=lambda r: r[0])
+                        merged_regions: List[Tuple[float, float]] = [regions[0]]
+                        for region in regions[1:]:
+                            prev = merged_regions[-1]
+                            if region[0] <= prev[1]:
+                                # Overlapping, merge
+                                merged_regions[-1] = (prev[0], max(prev[1], region[1]))
+                            else:
+                                merged_regions.append(region)
+                        regions = merged_regions
+
+                    # Convert time regions to sample positions
+                    for start_sec, end_sec in regions:
+                        start_sample = int(start_sec * sr)
+                        end_sample = int(end_sec * sr)
+                        duration_sec = end_sec - start_sec
+
+                        if duration_sec <= max_segment_sec:
+                            segments_samples.append((start_sample, end_sample))
+                        else:
+                            # Split long segments
+                            max_samples = int(max_segment_sec * sr)
+                            current = start_sample
+                            while current < end_sample:
+                                seg_end = min(current + max_samples, end_sample)
+                                if seg_end > current:
+                                    segments_samples.append((current, seg_end))
+                                current = seg_end
 
                     logger.info(
                         f"TEN VAD found {len(segments_samples)} speech segments"

@@ -171,6 +171,8 @@ def _mp_transcribe_chunked(
         use_ml_vad=settings.USE_ML_VAD,
         vad_engine=settings.VAD_ENGINE,
         vad_threshold=settings.VAD_TENVAD_THRESHOLD,
+        vad_hop_size=settings.VAD_TENVAD_HOP_SIZE,
+        vad_padding=settings.VAD_PADDING_SECONDS,
     )
 
     print(
