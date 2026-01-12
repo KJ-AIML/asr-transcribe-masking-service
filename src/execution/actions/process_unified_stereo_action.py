@@ -27,6 +27,7 @@ from src.models.transcription_model_adapter import (
 from src.utils.file.json_utils import save_result_to_json
 from src.utils.audio.chunk_wav_audio import vad_segment_audio_bytes
 from src.utils.transcript.post_processor import TranscriptPostProcessor
+from src.utils.transcript.transcript_cleaner import clean_transcription
 
 
 logger = get_logger(__name__)
@@ -685,7 +686,11 @@ class ProcessUnifiedStereoAction:
         Generate JSON structure matching sample_input.json format
         """
         segments = transcription_result.get("segments", [])
-        words = transcription_result.get("words", [])
+
+        # Clean transcription: filter ringtones, deduplicate words, merge short segments
+        cleaned = clean_transcription(segments)
+        segments = cleaned["segments"]
+        words = cleaned["words"]
 
         # Generate formatted text
         formatted_text = self._generate_formatted_text(segments)
