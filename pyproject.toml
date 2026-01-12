@@ -33,4 +33,5 @@ dependencies = [
     "torchcodec>=0.9.1",
     "whisper-timestamped>=1.15.4",
     "pythainlp>=5.0.0",
+    "ten-vad>=0.1.0",
 ]

@@ -168,6 +168,7 @@ def _mp_transcribe_chunked(
         min_silence_sec=0.25,
         max_segment_sec=60.0,
         use_ml_vad=settings.USE_ML_VAD,
+        vad_engine=settings.VAD_ENGINE,
     )
 
     print(
@@ -220,9 +221,9 @@ def _mp_transcribe_chunked(
         max_repeat=3,
         repetition_window_sec=2.0,
     )
-    
+
     dedup_words = post_processor.process_words(all_words)
-    
+
     result = {
         "channel": channel_label,
         "speaker": channel_label,

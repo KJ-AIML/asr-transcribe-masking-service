@@ -49,6 +49,7 @@ class Settings(BaseSettings):
 
     # VAD / audio processing
     USE_ML_VAD: bool = False
+    VAD_ENGINE: str = "ten"  # Options: "silero", "ten"
 
     # Server Configuration
     SERVER_PORT: int = 3000

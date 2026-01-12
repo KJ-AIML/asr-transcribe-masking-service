@@ -9,6 +9,7 @@ logger = get_logger(__name__)
 
 _silero_vad_model = None
 _silero_vad_get_speech_timestamps = None
+_ten_vad_model = None
 
 
 def _load_silero_vad():
@@ -22,6 +23,26 @@ def _load_silero_vad():
     _silero_vad_model = model
     _silero_vad_get_speech_timestamps = get_speech_timestamps
     return _silero_vad_model, _silero_vad_get_speech_timestamps
+
+
+def _load_ten_vad():
+    """Load TEN VAD model (lightweight, high-performance VAD)"""
+    global _ten_vad_model
+    if _ten_vad_model is not None:
+        return _ten_vad_model
+
+    try:
+        from ten_vad import TenVad
+
+        _ten_vad_model = TenVad()
+        logger.info("TEN VAD model loaded successfully")
+        return _ten_vad_model
+    except ImportError:
+        logger.error("ten-vad not installed, run: pip install ten-vad")
+        raise
+    except Exception as e:
+        logger.error(f"Failed to load TEN VAD: {e}")
+        raise
 
 
 class AudioChunk:
@@ -268,6 +289,7 @@ def vad_segment_audio_bytes(
     min_silence_sec: float = 0.3,
     max_segment_sec: float = 60.0,
     use_ml_vad: bool = False,
+    vad_engine: str = "silero",  # Options: "silero", "ten"
 ) -> Dict[str, Any]:
     try:
         buffer = io.BytesIO(wav_bytes)
@@ -282,37 +304,105 @@ def vad_segment_audio_bytes(
                 "segments": [],
             }
         total_duration = float(len(y) / sr)
+        segments_samples: List[Tuple[int, int]] = []
+
         if use_ml_vad:
             try:
-                import torch
+                if vad_engine == "ten":
+                    # Use TEN VAD (lightweight, high-performance)
+                    ten_vad = _load_ten_vad()
+                    # TEN VAD expects 16kHz audio
+                    # Convert numpy array to int16 for TEN VAD
+                    audio_int16 = (y * 32767).astype(np.int16)
 
-                model, get_speech_timestamps = _load_silero_vad()
-                audio_tensor = torch.from_numpy(y).float()
-                if audio_tensor.dim() == 1:
-                    audio_tensor = audio_tensor.unsqueeze(0)
-                speech_ts = get_speech_timestamps(audio_tensor, model, sampling_rate=sr)
-                segments_samples: List[Tuple[int, int]] = []
-                for ts in speech_ts:
-                    start = int(ts.get("start", 0))
-                    end = int(ts.get("end", start))
-                    duration_sec = (end - start) / sr
-                    if duration_sec < min_speech_sec:
-                        continue
-                    if duration_sec <= max_segment_sec:
-                        segments_samples.append((start, end))
-                        continue
-                    max_samples = int(max_segment_sec * sr)
-                    current = start
-                    while current < end:
-                        seg_end = min(current + max_samples, end)
-                        if seg_end > current:
-                            segments_samples.append((current, seg_end))
-                        current = seg_end
+                    # Process in frames (10ms per frame at 16kHz = 160 samples)
+                    frame_size = 160
+                    is_speech_list = []
+
+                    for i in range(0, len(audio_int16), frame_size):
+                        frame = audio_int16[i : i + frame_size]
+                        if len(frame) < frame_size:
+                            # Pad last frame if needed
+                            frame = np.pad(frame, (0, frame_size - len(frame)))
+                        is_speech = ten_vad.process(frame.tobytes())
+                        is_speech_list.append(is_speech)
+
+                    # Convert speech flags to segments
+                    in_speech = False
+                    speech_start = 0
+                    for i, is_speech in enumerate(is_speech_list):
+                        sample_pos = i * frame_size
+                        if is_speech and not in_speech:
+                            # Speech started
+                            in_speech = True
+                            speech_start = sample_pos
+                        elif not is_speech and in_speech:
+                            # Speech ended
+                            in_speech = False
+                            speech_end = sample_pos
+                            duration_sec = (speech_end - speech_start) / sr
+                            if duration_sec >= min_speech_sec:
+                                if duration_sec <= max_segment_sec:
+                                    segments_samples.append((speech_start, speech_end))
+                                else:
+                                    # Split long segments
+                                    max_samples = int(max_segment_sec * sr)
+                                    current = speech_start
+                                    while current < speech_end:
+                                        seg_end = min(current + max_samples, speech_end)
+                                        if seg_end > current:
+                                            segments_samples.append((current, seg_end))
+                                        current = seg_end
+
+                    # Handle speech at end of audio
+                    if in_speech:
+                        speech_end = len(y)
+                        duration_sec = (speech_end - speech_start) / sr
+                        if duration_sec >= min_speech_sec:
+                            segments_samples.append((speech_start, speech_end))
+
+                    logger.info(
+                        f"TEN VAD found {len(segments_samples)} speech segments"
+                    )
+
+                else:
+                    # Use Silero VAD (default)
+                    import torch
+
+                    model, get_speech_timestamps = _load_silero_vad()
+                    audio_tensor = torch.from_numpy(y).float()
+                    if audio_tensor.dim() == 1:
+                        audio_tensor = audio_tensor.unsqueeze(0)
+                    speech_ts = get_speech_timestamps(
+                        audio_tensor, model, sampling_rate=sr
+                    )
+
+                    for ts in speech_ts:
+                        start = int(ts.get("start", 0))
+                        end = int(ts.get("end", start))
+                        duration_sec = (end - start) / sr
+                        if duration_sec < min_speech_sec:
+                            continue
+                        if duration_sec <= max_segment_sec:
+                            segments_samples.append((start, end))
+                            continue
+                        max_samples = int(max_segment_sec * sr)
+                        current = start
+                        while current < end:
+                            seg_end = min(current + max_samples, end)
+                            if seg_end > current:
+                                segments_samples.append((current, seg_end))
+                            current = seg_end
+
+                    logger.info(
+                        f"Silero VAD found {len(segments_samples)} speech segments"
+                    )
+
             except Exception as e:
-                logger.error(f"Error in ML VAD, falling back to energy VAD: {e}")
+                logger.error(
+                    f"Error in ML VAD ({vad_engine}), falling back to energy VAD: {e}"
+                )
                 segments_samples = []
-        else:
-            segments_samples = []
         intervals = librosa.effects.split(y, top_db=top_db)
         merged: List[Tuple[int, int]] = []
         for start, end in intervals:
