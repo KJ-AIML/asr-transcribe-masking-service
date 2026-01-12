@@ -1,11 +1,8 @@
 """
-Patched asr.py
+ASR Models Module
 - Lazy-load models (no eager loading on ASRModelManager init)
 - Controlled loading with LRU eviction (max_loaded_models)
-- PathummaASR: use WhisperProcessor + WhisperForConditionalGeneration from_pretrained
-  (avoid HF pipeline which is eager and harder to control memory)
-- Ensure input dtypes match model dtype (float16 vs float32)
-- Safe chunking (<= 25-30s per chunk) and attention_mask handling
+- PathummaASR: uses whisper-timestamped for accurate word-level timestamps
 - Async load locks to avoid concurrent loads racing to GPU
 - Utilities: clear_cache, unload_models, memory logging
 
@@ -24,7 +21,6 @@ import os
 from collections import OrderedDict
 import tempfile
 
-from transformers import WhisperProcessor, WhisperForConditionalGeneration
 from huggingface_hub import snapshot_download
 
 from src.config.logs_config import get_logger
@@ -159,10 +155,12 @@ class TyphoonASR(ASRModelBase):
 
 
 class PathummaASR(ASRModelBase):
-    """Pathumma Whisper wrapper using transformers (processor + model).
+    """Pathumma Whisper wrapper using whisper-timestamped for accurate word-level timestamps.
 
-    This class lazy-loads with an asyncio.Lock and attempts to control memory by
-    moving models to device only when requested. Chunking and dtype casting are handled.
+    This class uses whisper-timestamped library which provides:
+    - Word-level timestamps using DTW on cross-attention scores
+    - Word confidence scores
+    - Compatible with HuggingFace models
     """
 
     def __init__(
@@ -175,19 +173,13 @@ class PathummaASR(ASRModelBase):
         self.lang = "th"
         self.task = "transcribe"
         self._model_loaded = False
-        self._processor: Optional[WhisperProcessor] = None
-        self._wf_model: Optional[WhisperForConditionalGeneration] = None
+        self._whisper_model = None
         self._load_lock = asyncio.Lock()
         self._transcribe_lock = asyncio.Lock()
-        self.num_beams = 1
-        self.max_new_tokens = 256
         # safe chunk <= 30 sec (use 25 by default)
         self.chunk_sec = min(25, chunk_sec)
-        # Anti-repetition parameters
+        # Anti-repetition parameters for whisper-timestamped
         self.no_repeat_ngram_size = 3
-        self.repetition_penalty = 1.2
-        # Cached suppress tokens for non-Thai characters (computed lazily)
-        self._suppress_tokens: Optional[List[int]] = None
 
     def _download_local_model(self) -> str:
         """Ensure model cached locally and return local path. Uses huggingface_hub snapshot_download.
@@ -213,193 +205,41 @@ class PathummaASR(ASRModelBase):
             return local_model_path
 
     def _load_model(self):
-        if self._model_loaded and self._wf_model is not None:
+        if self._model_loaded and self._whisper_model is not None:
             return
 
         logger.info(
-            f"Loading Pathumma model {self.model_name} dtype={self.torch_dtype} device={self.device}"
+            f"Loading Pathumma model {self.model_name} with whisper-timestamped on device={self.device}"
         )
 
-        local_model_path = None
         try:
-            local_model_path = self._download_local_model()
-        except Exception as e:
-            logger.warning(
-                f"snapshot_download failed: {e} - will try to load from hub directly"
+            import whisper_timestamped as whisper
+
+            # whisper-timestamped can load HuggingFace models directly
+            # Use the model_name (HuggingFace repo ID) to load
+            self._whisper_model = whisper.load_model(
+                self.model_name,
+                device=self.device
+                if self.device
+                else "cuda"
+                if torch.cuda.is_available()
+                else "cpu",
             )
-            local_model_path = self.model_name
 
-        self._processor = WhisperProcessor.from_pretrained(local_model_path)
-
-        self._wf_model = WhisperForConditionalGeneration.from_pretrained(
-            local_model_path,
-            torch_dtype=self.torch_dtype,
-            low_cpu_mem_usage=True,
-        )
-
-        # move to device (GPU if available and requested)
-        if torch.cuda.is_available() and "cuda" in self.device:
-            try:
-                self._wf_model = self._wf_model.to(self.device)
-                logger.info(f"Pathumma model moved to device: {self.device}")
-            except Exception:
-                logger.exception(
-                    "Failed to move Pathumma model to device; continuing with CPU (may be slow)"
-                )
-
-        self._wf_model.eval()
-
-        try:
-            self._wf_model.generation_config.use_cache = False
-            self._wf_model.generation_config.task = self.task
-            self._wf_model.generation_config.num_beams = self.num_beams
-            # Note: We use language parameter directly in generate() instead of forced_decoder_ids
-        except Exception:
-            logger.debug("Failed to set generation_config - fine.")
-
-        # Verify model is on expected device
-        if self._wf_model is not None:
-            actual_device = next(self._wf_model.parameters()).device
-            logger.info(f"Pathumma model verified on device: {actual_device}")
-
-        self._model_loaded = True
-        logger.info("Pathumma model loaded (transformers style)")
-
-    def _get_suppress_tokens(self) -> List[int]:
-        """Get token IDs to suppress (non-Thai characters like Chinese/Japanese/Korean).
-
-        This helps prevent the model from generating characters from other Asian languages
-        when transcribing Thai audio.
-        """
-        if self._suppress_tokens is not None:
-            return self._suppress_tokens
-
-        if self._processor is None:
-            return []
-
-        try:
-            tokenizer = self._processor.tokenizer
-            suppress_ids = []
-
-            # Suppress common non-Thai character ranges:
-            # - Chinese: \u4e00-\u9fff (CJK Unified Ideographs)
-            # - Japanese Hiragana: \u3040-\u309f
-            # - Japanese Katakana: \u30a0-\u30ff
-            # - Korean Hangul: \uac00-\ud7af
-            for token, token_id in tokenizer.get_vocab().items():
-                for c in token:
-                    code = ord(c)
-                    # Chinese characters
-                    if 0x4E00 <= code <= 0x9FFF:
-                        suppress_ids.append(token_id)
-                        break
-                    # Japanese Hiragana/Katakana
-                    elif 0x3040 <= code <= 0x30FF:
-                        suppress_ids.append(token_id)
-                        break
-                    # Korean Hangul
-                    elif 0xAC00 <= code <= 0xD7AF:
-                        suppress_ids.append(token_id)
-                        break
-
-            # Deduplicate and limit to avoid memory issues
-            suppress_ids = list(set(suppress_ids))
-            if len(suppress_ids) > 1000:
-                suppress_ids = suppress_ids[:1000]
-
-            self._suppress_tokens = suppress_ids
+            self._model_loaded = True
             logger.info(
-                f"Computed {len(self._suppress_tokens)} suppress tokens for non-Thai characters"
+                f"Pathumma model loaded with whisper-timestamped on device: {self.device}"
             )
-            return self._suppress_tokens
+
         except Exception as e:
-            logger.warning(f"Failed to compute suppress tokens: {e}")
-            return []
+            logger.exception(f"Failed to load whisper-timestamped model: {e}")
+            raise
 
     async def ensure_loaded(self):
         async with self._load_lock:
             if not self._model_loaded:
-                # heavy IO/load - consider run_in_executor if needed
+                # heavy IO/load
                 self._load_model()
-
-    def _load_audio_tensor(self, tmp_path: str) -> torch.Tensor:
-        import torchaudio
-
-        wav, sr = torchaudio.load(tmp_path)
-        if sr != 16000:
-            wav = torchaudio.functional.resample(wav, sr, 16000)
-        # ensure mono
-        if wav.dim() > 1:
-            wav = wav.mean(dim=0, keepdim=True)
-        wav = wav.squeeze(0)
-        return wav
-
-    def _chunk_audio(self, wav: torch.Tensor):
-        chunk_size = int(self.chunk_sec * 16000)
-        for i in range(0, len(wav), chunk_size):
-            yield wav[i : i + chunk_size]
-
-    def _transcribe_chunks_sync(self, wav: torch.Tensor) -> str:
-        results: List[str] = []
-
-        with torch.no_grad():
-            for chunk in self._chunk_audio(wav):
-                if chunk.numel() == 0:
-                    continue
-
-                inputs = self._processor(
-                    chunk,
-                    sampling_rate=16000,
-                    return_tensors="pt",
-                    return_attention_mask=True,
-                    padding="max_length",
-                    truncation=True,
-                )
-
-                # Verify and ensure model and input tensors are on the same device
-                model_device = next(self._wf_model.parameters()).device
-                input_features = inputs.input_features.to(
-                    device=model_device, dtype=self._wf_model.dtype
-                )
-
-                attention_mask = (
-                    inputs.attention_mask.to(model_device)
-                    if "attention_mask" in inputs
-                    else None
-                )
-
-                generate_kwargs = {
-                    "attention_mask": attention_mask,
-                    "max_new_tokens": self.max_new_tokens,
-                    "num_beams": self.num_beams,
-                    # Anti-repetition parameters
-                    "no_repeat_ngram_size": self.no_repeat_ngram_size,
-                    "repetition_penalty": self.repetition_penalty,
-                    # Direct language forcing (like transformers pipeline)
-                    "language": self.lang,
-                    "task": self.task,
-                }
-
-                # Suppress non-Thai characters (Chinese/Japanese/Korean)
-                suppress_tokens = self._get_suppress_tokens()
-                if suppress_tokens:
-                    generate_kwargs["suppress_tokens"] = suppress_tokens
-
-                generated = self._wf_model.generate(
-                    input_features,
-                    **generate_kwargs,
-                )
-
-                text = self._processor.batch_decode(
-                    generated, skip_special_tokens=True
-                )[0]
-                results.append(text)
-
-                del inputs, input_features, attention_mask, generated
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-
-        return " ".join(results)
 
     async def transcribe(
         self, audio_data: bytes, language: str = "th"
@@ -411,11 +251,9 @@ class PathummaASR(ASRModelBase):
         if language != self.lang:
             logger.info(f"Language changed from {self.lang} to {language}")
             self.lang = language
-            # Clear cached suppress tokens since language changed
-            self._suppress_tokens = None
 
         await self.ensure_loaded()
-        logger.info("Model loaded on device, starting transcription...")
+        logger.info("Model loaded, starting transcription with whisper-timestamped...")
 
         tmp_path = None
         try:
@@ -423,13 +261,56 @@ class PathummaASR(ASRModelBase):
                 tmp.write(audio_data)
                 tmp_path = tmp.name
 
-            wav = self._load_audio_tensor(tmp_path)
+            import whisper_timestamped as whisper
+
+            # Load audio using whisper-timestamped
+            audio = whisper.load_audio(tmp_path)
 
             async with self._transcribe_lock:
-                text = self._transcribe_chunks_sync(wav)
+                # Run whisper-timestamped transcription
+                # This uses DTW on cross-attention for accurate word timestamps
+                result = whisper.transcribe(
+                    self._whisper_model,
+                    audio,
+                    language=self.lang,
+                    task=self.task,
+                    # Accuracy options
+                    beam_size=1,  # greedy for speed, increase for accuracy
+                    vad=False,  # We handle VAD separately
+                    detect_disfluencies=False,
+                    compute_word_confidence=True,
+                    # Anti-hallucination options
+                    condition_on_previous_text=True,
+                    no_speech_threshold=0.6,
+                    compression_ratio_threshold=2.4,
+                )
 
-            logger.info(f"Transcription completed, text length: {len(text)}")
-            return {"text": text, "words": [], "error": None}
+            # Extract words from all segments
+            all_words = []
+            for segment in result.get("segments", []):
+                for word_info in segment.get("words", []):
+                    all_words.append(
+                        {
+                            "word": word_info.get("text", ""),
+                            "start": word_info.get("start", 0.0),
+                            "end": word_info.get("end", 0.0),
+                            "probability": word_info.get("confidence", 0.0),
+                        }
+                    )
+
+            # Full text
+            full_text = result.get("text", "")
+
+            logger.info(
+                f"Transcription completed, text length: {len(full_text)}, words: {len(all_words)}"
+            )
+
+            return {
+                "text": full_text,
+                "words": all_words,
+                "segments": result.get("segments", []),
+                "error": None,
+            }
 
         except Exception as e:
             logger.exception(f"Pathumma transcription error: {e}")
@@ -444,15 +325,7 @@ class PathummaASR(ASRModelBase):
 
     def unload_model(self):
         try:
-            if self._wf_model is not None:
-                try:
-                    # try move to CPU first
-                    self._wf_model.to("cpu")
-                except Exception:
-                    pass
-
-            self._wf_model = None
-            self._processor = None
+            self._whisper_model = None
             self._model_loaded = False
 
             gc.collect()
@@ -468,7 +341,7 @@ class PathummaASR(ASRModelBase):
             logger.exception("Failed unloading Pathumma model")
 
     def is_loaded(self) -> bool:
-        return self._model_loaded and (self._wf_model is not None)
+        return self._model_loaded and (self._whisper_model is not None)
 
 
 class PathummaNoiseASR(PathummaASR):
