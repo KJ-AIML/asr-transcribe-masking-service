@@ -319,7 +319,9 @@ async def pii_worker(state: WorkerState):
         overview_text = state["text_and_segment"].get("text", "")
 
     # Debug: Log PII info content before sending to Payment Agent
-    # logger.info(f"DEBUG: PII Info content for {state['agent_name']}: {state['pii_info']}")
+    logger.info(
+        f"DEBUG: PII Info content for {state['agent_name']}: {state['pii_info']}"
+    )
 
     messages = [
         SystemMessage(content=agent_config["system_prompt"]),
@@ -341,7 +343,7 @@ async def pii_worker(state: WorkerState):
 
     result = await agent_manager.pii_sub_agent_worker.ainvoke(messages)
 
-    # logger.info(f"DEBUG: Payment Agent result: {result}")
+    logger.info(f"DEBUG: Payment Agent result: {result}")
 
     logger.info(f"=== PII Worker Completed: {state['agent_name']} ===")
     return {

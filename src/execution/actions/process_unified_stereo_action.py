@@ -636,6 +636,7 @@ class ProcessUnifiedStereoAction:
         segments = []
         current_segment_words = []
         last_end = None
+        segment_id = 0  # Running counter for segment IDs
 
         for word in words:
             word_start = word.get("start", 0)
@@ -648,18 +649,23 @@ class ProcessUnifiedStereoAction:
             if last_end is not None:
                 gap = word_start - last_end
                 if gap > self.NEW_TURN_THRESHOLD and current_segment_words:
-                    segments.append(self._create_segment(current_segment_words))
+                    segments.append(
+                        self._create_segment(current_segment_words, segment_id)
+                    )
+                    segment_id += 1
                     current_segment_words = []
 
             current_segment_words.append(word)
             last_end = word_end
 
         if current_segment_words:
-            segments.append(self._create_segment(current_segment_words))
+            segments.append(self._create_segment(current_segment_words, segment_id))
 
         return segments
 
-    def _create_segment(self, words: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def _create_segment(
+        self, words: List[Dict[str, Any]], segment_id: int = 0
+    ) -> Dict[str, Any]:
         """Create a segment from a list of words"""
         if not words:
             return {}
@@ -673,6 +679,8 @@ class ProcessUnifiedStereoAction:
         speaker = max(set(speakers), key=speakers.count) if speakers else "Unknown"
 
         return {
+            "id": segment_id,
+            "seek": 0,
             "start": start,
             "end": end,
             "text": text,
