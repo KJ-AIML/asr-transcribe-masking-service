@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     LOG_AUTO_SETUP: bool = True
 
     # VAD / audio processing
-    USE_ML_VAD: bool = False
+    USE_ML_VAD: bool = True  # Enable VAD to filter silence before transcription
     VAD_ENGINE: str = "ten"  # Options: "silero", "ten"
     VAD_TENVAD_THRESHOLD: float = 0.3  # Typhoon BE default
     VAD_TENVAD_HOP_SIZE: int = 256  # Frame hop size for TEN VAD

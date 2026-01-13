@@ -67,7 +67,7 @@ class ProcessTranscriptUseCase:
         chunked_result = chunk_transcript(
             json_data=transcript_data,
             chunk_duration=60.0,
-            overlap_duration=10.0,
+            overlap_duration=5.0,
             include_original_text=True,
         )
 
@@ -282,7 +282,7 @@ class ProcessTranscriptUseCase:
             "processing_summary": {
                 "total_duration": chunked_result["chunking_config"]["total_duration"],
                 "chunk_size": 60.0,
-                "overlap": 10.0,
+                "overlap": 5.0,
             },
         }
 
@@ -447,13 +447,13 @@ class ProcessTranscriptUseCase:
                             batch_result = await self.re_verify_action.execute(
                                 batch_input
                             )
-                            
+
                             # Check if re-verify failed and trigger retry
                             if batch_result.get("status") == "failed":
                                 raise Exception(
                                     f"Re-verify workflow failed: {batch_result.get('error', 'Unknown error')}"
                                 )
-                            
+
                             logger.info(
                                 f"Batch Re-Verify completed for chunk {chunk_id}"
                             )
@@ -533,6 +533,35 @@ class ProcessTranscriptUseCase:
                 for batch in batch_results_list:
                     re_verify_results.extend(batch)
 
+        # Deduplicate re-verify results by timestamp (from overlapping chunks)
+        def deduplicate_detections(detections):
+            """Remove duplicate detections based on timestamp and text"""
+            seen = set()
+            unique = []
+            for det in detections:
+                # Create unique key from start_time, end_time, and original_text
+                key = (
+                    det.get("start_time"),
+                    det.get("end_time"),
+                    det.get("original_text", ""),
+                )
+                if key not in seen:
+                    seen.add(key)
+                    unique.append(det)
+                else:
+                    logger.debug(
+                        f"Removing duplicate detection: {det.get('original_text', '')} at {det.get('start_time')}-{det.get('end_time')}"
+                    )
+            return unique
+
+        # Apply deduplication
+        original_count = len(re_verify_results)
+        re_verify_results = deduplicate_detections(re_verify_results)
+        if original_count != len(re_verify_results):
+            logger.info(
+                f"Deduplicated re-verify results: {original_count} -> {len(re_verify_results)}"
+            )
+
         # Add re-verify results to the main result
         result["re_verify_results"] = re_verify_results
         result["re_verify_summary"] = {
@@ -564,24 +593,24 @@ class ProcessTranscriptUseCase:
         # ):
         #     logger.info("Starting Masker process for re-verified detections")
 
-            # # Prepare input for masker action
-            # masker_input = {
-            #     "transcript": transcript_data.get("text", ""),
-            #     "re_verify_results": result["re_verify_results"],
-            # }
+        # # Prepare input for masker action
+        # masker_input = {
+        #     "transcript": transcript_data.get("text", ""),
+        #     "re_verify_results": result["re_verify_results"],
+        # }
 
-            # # Execute masker action
-            # masker_result = await self.masker_action.execute(masker_input)
+        # # Execute masker action
+        # masker_result = await self.masker_action.execute(masker_input)
 
-            # # Add masker results to final result
-            # result["masker_result"] = masker_result
-            # result["original_transcript"] = transcript_data.get("text", "")
-            # result["masked_transcript"] = masker_result.get("masked_transcript", "")
-            # result["masker_summary"] = masker_result.get("masking_summary", {})
+        # # Add masker results to final result
+        # result["masker_result"] = masker_result
+        # result["original_transcript"] = transcript_data.get("text", "")
+        # result["masked_transcript"] = masker_result.get("masked_transcript", "")
+        # result["masker_summary"] = masker_result.get("masking_summary", {})
 
-            # logger.info(
-            #     f"Masker process completed: {result['masker_summary'].get('total_detections_masked', 0)} detections masked"
-            # )
+        # logger.info(
+        #     f"Masker process completed: {result['masker_summary'].get('total_detections_masked', 0)} detections masked"
+        # )
 
         return result
 

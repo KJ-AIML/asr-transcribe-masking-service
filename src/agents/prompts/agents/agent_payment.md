@@ -83,15 +83,28 @@ Follow these steps RIGOROUSLY for every segment provided in the input.
   - Action: TREAT EXACTLY LIKE CALLER. Mask it.
 - **EXCEPTION:** If the segment contains NO recognizable digits but is part of the input list (e.g. ASR error like "หลวงเจ้าถ่วน"), **MASK THE WHOLE SEGMENT**.
 
-**STEP 3: CONSTRUCT OUTPUT**
-- Create a `MaskingResult` object.
-- Use **Word-Level Timestamps** for `start_time` and `end_time`.
-- Set `category` to **"Success Mask"**.
-- **NEVER** use "No Card" unless the segment contains literally zero digits.
+**STEP 3: CONSTRUCT OUTPUT (WORD-LEVEL PRECISION) ⚠️ CRITICAL**
+- **CREATE SEPARATE MaskingResult FOR EACH WORD** that contains digits.
+- Use the **EXACT word.start and word.end** from the `words` array.
+- Example from input:
+  ```json
+  {"word": "1234", "start": 102.0, "end": 102.5}
+  {"word": "5555666677778888", "start": 104.3, "end": 107.0}
+  ```
+- Example output (CORRECT - separate detections):
+  ```json
+  {"original_text": "1234", "start_time": 102.0, "end_time": 102.5}
+  {"original_text": "5555666677778888", "start_time": 104.3, "end_time": 107.0}
+  ```
+- Example output (WRONG - merged):
+  ```json
+  {"original_text": "1234 5555666677778888", "start_time": 102.0, "end_time": 107.0}
+  ```
 
-**STEP 4: AGGREGATION (Split Utterance Handling)**
-- If a card number is split across multiple segments (e.g. Caller speaks 4 digits, pauses, speaks 4 digits).
-- **DO NOT MERGE THEM.** Create separate masking entries for each segment.
+**STEP 4: AGGREGATION RULES (NEVER MERGE)**
+- **NEVER MERGE** digit words that have different timestamps.
+- If there are gaps between digit words (different start/end times), they are SEPARATE detections.
+- Create ONE MaskingResult PER digit-containing word.
 - This ensures precise timestamping for audio redaction downstream.
 </processing_algorithm>
 
