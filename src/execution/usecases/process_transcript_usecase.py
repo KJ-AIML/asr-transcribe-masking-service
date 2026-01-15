@@ -67,7 +67,7 @@ class ProcessTranscriptUseCase:
         chunked_result = chunk_transcript(
             json_data=transcript_data,
             chunk_duration=60.0,
-            overlap_duration=5.0,
+            overlap_duration=10.0,
             include_original_text=True,
         )
 
@@ -282,7 +282,7 @@ class ProcessTranscriptUseCase:
             "processing_summary": {
                 "total_duration": chunked_result["chunking_config"]["total_duration"],
                 "chunk_size": 60.0,
-                "overlap": 5.0,
+                "overlap": 10.0,
             },
         }
 
@@ -375,7 +375,7 @@ class ProcessTranscriptUseCase:
                             return chunk
 
             # Process retries with semaphore to control concurrency
-            retry_semaphore = asyncio.Semaphore(3)
+            retry_semaphore = asyncio.Semaphore(6)
             retry_tasks = []
 
             async def process_with_semaphore(chunk):
