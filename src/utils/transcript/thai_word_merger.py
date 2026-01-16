@@ -7,6 +7,7 @@ not word-level timestamps for Thai language.
 """
 
 from typing import List, Dict, Any
+import re
 from src.config.logs_config import get_logger
 
 logger = get_logger(__name__)
@@ -31,36 +32,33 @@ def merge_tokens_to_thai_words(tokens: List[Dict[str, Any]]) -> List[Dict[str, A
         logger.warning("PyThaiNLP not installed, returning tokens as-is")
         return tokens
 
-    # Step 1: Concatenate all token text
-    # Filter out empty tokens and whitespace-only tokens
-    filtered_tokens = [t for t in tokens if t.get("word", "").strip()]
-
+    # Step 1: Concatenate normalized token text (remove whitespace) and track boundaries
+    filtered_tokens = [t for t in tokens if t.get("word") is not None]
     if not filtered_tokens:
         return []
 
-    # Build full text from tokens (remove spaces between Thai characters)
-    full_text = ""
-    token_boundaries = []  # Track where each token starts/ends in full_text
+    normalized_text = ""
+    token_boundaries = []  # Track token positions in normalized_text
 
     for token in filtered_tokens:
-        word = token.get("word", "")
-        # Skip whitespace tokens
-        if not word.strip():
+        raw = str(token.get("word", ""))
+        normalized = re.sub(r"\s+", "", raw)
+        if not normalized:
             continue
-        start_pos = len(full_text)
-        full_text += word
-        end_pos = len(full_text)
+        start_pos = len(normalized_text)
+        normalized_text += normalized
+        end_pos = len(normalized_text)
         token_boundaries.append(
             {"start_pos": start_pos, "end_pos": end_pos, "token": token}
         )
 
-    if not full_text.strip():
+    if not normalized_text:
         return []
 
     # Step 2: Use PyThaiNLP to segment into proper Thai words
     try:
         segmented_words = word_tokenize(
-            full_text, engine="newmm", keep_whitespace=False
+            normalized_text, engine="newmm", keep_whitespace=False
         )
     except Exception as e:
         logger.warning(
@@ -70,7 +68,7 @@ def merge_tokens_to_thai_words(tokens: List[Dict[str, Any]]) -> List[Dict[str, A
         if filtered_tokens:
             return [
                 {
-                    "word": full_text,
+                    "word": normalized_text,
                     "start": filtered_tokens[0].get("start", 0.0),
                     "end": filtered_tokens[-1].get("end", 0.0),
                     "probability": sum(t.get("probability", 0) for t in filtered_tokens)

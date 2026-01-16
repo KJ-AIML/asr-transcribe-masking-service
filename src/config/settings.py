@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     VAD_TENVAD_HOP_SIZE: int = 256  # Frame hop size for TEN VAD
     VAD_MIN_SPEECH_DURATION: float = 0.3  # Minimum speech duration (seconds)
     MIN_SILENCE_DURATION: float = 0.2  # Minimum silence to split (seconds)
-    VAD_PADDING_SECONDS: float = 0.1  # Padding around speech regions
+    VAD_PADDING_SECONDS: float = 0.3  # Padding around speech regions
 
     # Server Configuration
     SERVER_PORT: int = 3000

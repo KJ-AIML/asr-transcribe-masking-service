@@ -287,20 +287,30 @@ class PathummaASR(ASRModelBase):
 
             # Extract words from all segments (raw tokens)
             raw_tokens = []
+            segments = []
+            from src.utils.transcript.thai_word_merger import (
+                merge_tokens_to_thai_words,
+                merge_segment_words,
+            )
+
             for segment in result.get("segments", []):
+                segment_words = []
                 for word_info in segment.get("words", []):
-                    raw_tokens.append(
-                        {
-                            "word": word_info.get("text", ""),
-                            "start": word_info.get("start", 0.0),
-                            "end": word_info.get("end", 0.0),
-                            "probability": word_info.get("confidence", 0.0),
-                        }
-                    )
+                    token = {
+                        "word": word_info.get("text", ""),
+                        "start": word_info.get("start", 0.0),
+                        "end": word_info.get("end", 0.0),
+                        "probability": word_info.get("confidence", 0.0),
+                    }
+                    raw_tokens.append(token)
+                    segment_words.append(token)
+
+                segment_copy = {k: v for k, v in segment.items() if k != "words"}
+                segment_copy["words"] = segment_words
+                merged_segment = merge_segment_words(segment_copy)
+                segments.append(merged_segment)
 
             # Merge tokens into proper Thai words using PyThaiNLP
-            from src.utils.transcript.thai_word_merger import merge_tokens_to_thai_words
-
             all_words = merge_tokens_to_thai_words(raw_tokens)
 
             # Full text from merged words
@@ -317,7 +327,7 @@ class PathummaASR(ASRModelBase):
             return {
                 "text": full_text,
                 "words": all_words,
-                "segments": result.get("segments", []),
+                "segments": segments,
                 "error": None,
             }
 

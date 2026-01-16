@@ -297,6 +297,7 @@ def vad_segment_audio_bytes(
     vad_threshold: float = 0.3,  # TEN VAD threshold (0-1)
     vad_hop_size: int = 256,  # TEN VAD hop size
     vad_padding: float = 0.1,  # Padding around speech regions (seconds)
+    normalize: bool = True,
 ) -> Dict[str, Any]:
     try:
         buffer = io.BytesIO(wav_bytes)
@@ -304,6 +305,10 @@ def vad_segment_audio_bytes(
         if sr != target_sr:
             y = librosa.resample(y, orig_sr=sr, target_sr=target_sr)
             sr = target_sr
+        if normalize:
+            peak = np.max(np.abs(y)) if len(y) else 0.0
+            if peak > 0:
+                y = y / peak
         if len(y) == 0:
             return {
                 "sample_rate": sr,
