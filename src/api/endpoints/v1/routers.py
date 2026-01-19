@@ -2,12 +2,13 @@ from fastapi import APIRouter
 
 # Import v1 endpoints
 from src.api.endpoints.v1 import (
-    health,
-    process_file2choose_model,
-    process_json_transcript,
-    process_qa_auditor,
-    process_wav2file,
-    process_unified_stereo,
+	health,
+	process_file2choose_model,
+	process_json_transcript,
+	process_qa_auditor,
+	process_wav2file,
+	process_unified_stereo,
+	process_unified_stereo_wav2file,
 )
 
 # Create v1 router
@@ -36,4 +37,9 @@ v1_router.include_router(
     process_unified_stereo.router,
     prefix="/process_unified_stereo",
     tags=["Full Pipeline"],
+)
+v1_router.include_router(
+	process_unified_stereo_wav2file.router,
+	prefix="/process_unified_stereo_wav2file",
+	tags=["Full Pipeline"],
 )

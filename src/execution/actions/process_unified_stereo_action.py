@@ -25,7 +25,7 @@ from src.models.transcription_model_adapter import (
     TyphoonAdapter,
 )
 from src.utils.file.json_utils import save_result_to_json
-from src.utils.audio.chunk_wav_audio import vad_segment_audio_bytes
+from src.utils.audio.chunk_wav_audio import vad_segment_audio_bytes, chunk_wav_audio_bytes
 from src.utils.transcript.post_processor import TranscriptPostProcessor
 from src.utils.transcript.transcript_cleaner import clean_transcription
 
@@ -239,6 +239,154 @@ def _mp_transcribe_chunked(
     return result
 
 
+def _mp_transcribe_chunked_fixed(
+    audio_bytes: bytes,
+    model_name: str,
+    channel_label: str,
+    adapter: TranscriptionModelAdapter,
+    max_concurrent_chunks: int,
+    device: str,
+) -> Dict[str, Any]:
+    import time
+
+    chunked_start = time.time()
+    print(
+        f"[MP Worker {device}] Fixed-size chunked transcription for {channel_label} at {chunked_start:.2f}"
+    )
+
+    chunk_info = chunk_wav_audio_bytes(
+        wav_bytes=audio_bytes,
+        target_sr=16_000,
+        chunk_duration_s=30,
+        overlap_s=3,
+        batch_size=max_concurrent_chunks or 3,
+    )
+
+    print(
+        f"[MP Worker {device}] Fixed chunking completed in {time.time() - chunked_start:.2f}s, found {chunk_info.get('num_chunks', 0)} chunks"
+    )
+
+    all_words: List[Dict[str, Any]] = []
+
+    for i, chunk in enumerate(chunk_info["chunk_generator"]()):
+        chunk_start = time.time()
+        print(
+            f"[MP Worker {device}] Processing fixed chunk {i + 1}/{chunk_info.get('num_chunks', 0)} at {chunk_start:.2f}..."
+        )
+
+        chunk_bytes = chunk.to_bytes()
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
+            tmp_file.write(chunk_bytes)
+            chunk_audio_path = tmp_file.name
+
+        try:
+            chunk_result = asyncio.run(
+                adapter.transcribe_with_model(
+                    audio_path=chunk_audio_path,
+                    model_name=model_name,
+                    language="th",
+                )
+            )
+
+            words = chunk_result.get("words", [])
+            offset = float(chunk.start_sec)
+
+            for w in words:
+                w_start = float(w.get("start", 0.0)) + offset
+                w_end = float(w.get("end", 0.0)) + offset
+                w["start"] = w_start
+                w["end"] = w_end
+                all_words.append(w)
+
+            print(
+                f"[MP Worker {device}] Fixed chunk {i + 1} completed in {time.time() - chunk_start:.2f}s, {len(words)} words"
+            )
+
+        finally:
+            if os.path.exists(chunk_audio_path):
+                os.unlink(chunk_audio_path)
+
+    post_processor = TranscriptPostProcessor(
+        overlap_tolerance=0.05,
+        max_repeat=3,
+        repetition_window_sec=2.0,
+    )
+
+    dedup_words = post_processor.process_words(all_words)
+
+    result = {
+        "channel": channel_label,
+        "speaker": channel_label,
+        "words": dedup_words,
+        "language": "th",
+        "duration": chunk_info.get("total_duration_sec", 0),
+    }
+
+    return result
+
+
+def _mp_worker_transcribe_channel_fixed(
+    audio_bytes: bytes,
+    model_name: str,
+    channel_label: str,
+    device: str,
+    max_concurrent_chunks: int,
+    result_queue: mp.Queue,
+) -> None:
+    import torch
+
+    channel_start = time.time()
+    print(
+        f"[MP Worker {device}] Starting fixed-chunk transcription for {channel_label} at {channel_start:.2f}"
+    )
+
+    try:
+        if device != "cpu":
+            torch.cuda.set_device(device)
+            print(f"[MP Worker {device}] Set device to {device}")
+        else:
+            print(f"[MP Worker {device}] Using CPU mode")
+
+        asr_manager = ASRModelManager(device=device)
+        adapter = TranscriptionModelAdapter()
+        adapter.register_adapter("typhoon", TyphoonAdapter(asr_manager))
+        adapter.register_adapter("pathumma", WhisperAdapter("pathumma", asr_manager))
+        adapter.register_adapter(
+            "pathumma_noise", WhisperAdapter("pathumma_noise", asr_manager)
+        )
+
+        print(f"[MP Worker {device}] Loaded ASR manager for {model_name}")
+
+        if model_name in ["pathumma", "pathumma_noise"]:
+            result = _mp_transcribe_chunked_fixed(
+                audio_bytes,
+                model_name,
+                channel_label,
+                adapter,
+                max_concurrent_chunks,
+                device,
+            )
+        else:
+            result = _mp_transcribe_single(
+                audio_bytes,
+                model_name,
+                channel_label,
+                adapter,
+            )
+
+        print(
+            f"[MP Worker {device}] Fixed-chunk transcription completed for {channel_label} in {time.time() - channel_start:.2f}s"
+        )
+        result_queue.put((channel_label, result))
+
+    except Exception as e:
+        print(f"[MP Worker {device}] Error in fixed-chunk transcription for {channel_label}: {e}")
+        import traceback
+
+        traceback.print_exc()
+        result_queue.put((channel_label, None))
+
+
 class ProcessUnifiedStereoAction:
     """
     Unified action that processes stereo WAV files through complete pipeline:
@@ -259,6 +407,8 @@ class ProcessUnifiedStereoAction:
         self.AMBIGUOUS_CHANNEL_LABEL = "Unknown"
 
         # Processing thresholds
+        # NEW_TURN_THRESHOLD: max gap (seconds) between words in the same turn
+        # If gap > NEW_TURN_THRESHOLD, start a new segment
         self.NEW_TURN_THRESHOLD = 0.3
         self.FUSE_GAP = 0.25
         self.REBUILD_GAP = 0.0
@@ -305,6 +455,721 @@ class ProcessUnifiedStereoAction:
             logger.error(f"Error detecting devices: {e}")
 
     async def execute(
+        self,
+        file_content: bytes,
+        filename: str,
+        force_model: Optional[str] = None,
+        skip_model_selection: bool = False,
+        auto_continue: bool = True,
+    ) -> Dict[str, Any]:
+        return await self.execute_original(
+            file_content=file_content,
+            filename=filename,
+            force_model=force_model,
+            skip_model_selection=skip_model_selection,
+            auto_continue=auto_continue,
+        )
+
+    async def execute_original(
+        self,
+        file_content: bytes,
+        filename: str,
+        force_model: Optional[str] = None,
+        skip_model_selection: bool = False,
+        auto_continue: bool = True,
+    ) -> Dict[str, Any]:
+        """Execute unified stereo processing"""
+        logger.info(f"Starting unified stereo processing for: {filename}")
+
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
+                tmp_file.write(file_content)
+                tmp_path = tmp_file.name
+
+            selected_model = force_model or "pathumma"
+            model_selection_result = None
+
+            if not skip_model_selection:
+                logger.info("Running model selection...")
+                model_selection_result = {
+                    "chosen_model": selected_model,
+                    "reasoning": "Model selection skipped - using default",
+                }
+
+            logger.info(f"Processing stereo with model: {selected_model}")
+
+            transcription_result = await self._process_stereo_with_speaker_separation(
+                tmp_path, selected_model
+            )
+
+            logger.info("Generating JSON structure...")
+            json_structure = self._generate_json_structure(
+                transcription_result, filename
+            )
+
+            process_json_result = None
+            if auto_continue:
+                logger.info("Auto-continuing to process_json...")
+                process_json_result = {
+                    "status": "pending",
+                    "message": "Process_json integration pending",
+                }
+
+            result = {
+                "action": "unified_stereo_processed",
+                "filename": filename,
+                "status": "completed",
+                "model_selection": model_selection_result,
+                "transcription": transcription_result,
+                "json_structure": json_structure,
+                "process_json_result": process_json_result,
+                "metadata": {
+                    "processed_at": datetime.now().isoformat(),
+                    "model_used": selected_model,
+                    "auto_continue": auto_continue,
+                    "devices": {
+                        "agent": self.agent_device,
+                        "caller": self.caller_device,
+                    },
+                },
+            }
+
+            try:
+                json_file_path = save_result_to_json(
+                    result, f"{filename}_unified_stereo"
+                )
+                result["json_file_path"] = json_file_path
+
+                json_structure_path = save_result_to_json(
+                    json_structure, f"{filename}_json_structure_unified_stereo"
+                )
+                json_structure["json_file_path"] = json_structure_path
+
+                logger.info(f"Unified stereo results saved to: {json_file_path}")
+            except Exception as e:
+                logger.error(f"Failed to save results to JSON: {str(e)}")
+
+            logger.info(f"Unified stereo processing completed for: {filename}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error in unified stereo processing: {e}")
+            raise
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                    logger.debug(f"Cleaned up temporary file: {tmp_path}")
+                except Exception as cleanup_error:
+                    logger.warning(
+                        f"Failed to cleanup temporary file {tmp_path}: {cleanup_error}"
+                    )
+
+    async def _process_stereo_with_speaker_separation(
+        self, audio_path: str, model_name: str
+    ) -> Dict[str, Any]:
+        """Process stereo audio with speaker separation (Agent/Caller)"""
+        logger.info(f"Processing stereo with speaker separation using {model_name}")
+
+        try:
+            logger.info("Loading and splitting stereo audio...")
+            (
+                left_channel_data,
+                right_channel_data,
+                duration,
+            ) = await self._load_and_split_stereo(audio_path)
+
+            logger.info("Starting multiprocessing transcription...")
+            logger.info(
+                f"Agent device: {self.agent_device}, Caller device: {self.caller_device}"
+            )
+
+            process_start = time.time()
+
+            result_queue = mp.Queue()
+
+            p0 = mp.Process(
+                target=_mp_worker_transcribe_channel,
+                args=(
+                    left_channel_data["audio_bytes"],
+                    model_name,
+                    self.LEFT_CHANNEL_LABEL,
+                    self.agent_device,
+                    self.max_concurrent_chunks,
+                    result_queue,
+                ),
+            )
+
+            p1 = mp.Process(
+                target=_mp_worker_transcribe_channel,
+                args=(
+                    right_channel_data["audio_bytes"],
+                    model_name,
+                    self.RIGHT_CHANNEL_LABEL,
+                    self.caller_device,
+                    self.max_concurrent_chunks,
+                    result_queue,
+                ),
+            )
+
+            print(f"[Main] Starting processes at {time.time():.2f}...")
+            p0.start()
+            p1.start()
+
+            print("[Main] Processes started, waiting for results...")
+
+            left_result = None
+            right_result = None
+            results_received = 0
+            max_timeout = 1800
+
+            while results_received < 2:
+                try:
+                    channel_label, result = result_queue.get(timeout=max_timeout)
+                    print(f"[Main] Received result for {channel_label}")
+                    if channel_label == self.LEFT_CHANNEL_LABEL:
+                        left_result = result
+                    elif channel_label == self.RIGHT_CHANNEL_LABEL:
+                        right_result = result
+                    results_received += 1
+                except Exception as e:
+                    logger.error(f"[Main] Timeout waiting for results from queue: {e}")
+                    break
+
+            p0.join(timeout=10)
+            p1.join(timeout=10)
+
+            if p0.is_alive():
+                logger.warning(
+                    "[Main] Left process still alive after join, terminating..."
+                )
+                p0.terminate()
+            if p1.is_alive():
+                logger.warning(
+                    "[Main] Right process still alive after join, terminating..."
+                )
+                p1.terminate()
+
+            if left_result is None:
+                left_result = {
+                    "channel": self.LEFT_CHANNEL_LABEL,
+                    "speaker": self.LEFT_CHANNEL_LABEL,
+                    "words": [],
+                    "language": "th",
+                    "duration": left_channel_data.get("duration", 0),
+                }
+
+            if right_result is None:
+                right_result = {
+                    "channel": self.RIGHT_CHANNEL_LABEL,
+                    "speaker": self.RIGHT_CHANNEL_LABEL,
+                    "words": [],
+                    "language": "th",
+                    "duration": right_channel_data.get("duration", 0),
+                }
+
+            total_time = time.time() - process_start
+            print(f"[Main] All processes completed in {total_time:.2f}s")
+            logger.info(f"Multiprocessing transcription completed in {total_time:.2f}s")
+
+            logger.info("Merging stereo results...")
+            merged_result = self._merge_stereo_results(
+                left_result, right_result, duration
+            )
+
+            return merged_result
+
+        except Exception as e:
+            logger.error(f"Error in stereo processing: {e}")
+            import traceback
+
+            traceback.print_exc()
+            raise
+
+    async def _load_and_split_stereo(self, audio_path: str) -> tuple:
+        """Load stereo audio and split into left/right channels"""
+        logger.info(f"Loading audio from {audio_path}")
+
+        try:
+            y, sr = librosa.load(audio_path, sr=None, mono=False)
+
+            if len(y.shape) == 1:
+                logger.warning("Audio is mono, duplicating to stereo for processing")
+                y = np.vstack([y, y])
+            elif len(y.shape) == 2 and y.shape[0] == 1:
+                logger.warning("Audio is mono (1 channel), duplicating to stereo")
+                y = np.vstack([y[0], y[0]])
+            elif len(y.shape) == 2 and y.shape[0] > 2:
+                logger.warning(
+                    f"Audio has {y.shape[0]} channels, using first 2 for stereo"
+                )
+                y = y[:2, :]
+
+            duration = y.shape[1] / sr
+            logger.info(
+                f"Loaded stereo audio: {sr} Hz, {duration:.2f}s, shape: {y.shape}"
+            )
+
+            left_channel = y[0, :]
+            right_channel = y[1, :] if y.shape[0] > 1 else y[0, :]
+
+            left_buffer = io.BytesIO()
+            sf.write(left_buffer, left_channel, sr, format="WAV")
+            left_buffer.seek(0)
+            left_channel_bytes = left_buffer.read()
+
+            right_buffer = io.BytesIO()
+            sf.write(right_buffer, right_channel, sr, format="WAV")
+            right_buffer.seek(0)
+            right_channel_bytes = right_buffer.read()
+
+            left_channel_data = {
+                "path": audio_path,
+                "channel": "left",
+                "audio_bytes": left_channel_bytes,
+                "sample_rate": sr,
+                "duration": len(left_channel) / sr,
+                "speaker": "Agent",
+            }
+
+            right_channel_data = {
+                "path": audio_path,
+                "channel": "right",
+                "audio_bytes": right_channel_bytes,
+                "sample_rate": sr,
+                "duration": len(right_channel) / sr,
+                "speaker": "Caller",
+            }
+
+            logger.info(
+                f"Split stereo audio - Left (Agent): {len(left_channel) / sr:.2f}s, Right (Caller): {len(right_channel) / sr:.2f}s"
+            )
+
+            return left_channel_data, right_channel_data, duration
+
+        except Exception as e:
+            logger.error(f"Error loading and splitting stereo audio: {e}")
+            raise
+
+    def _merge_stereo_results(
+        self, left_result: Dict[str, Any], right_result: Dict[str, Any], duration: float
+    ) -> Dict[str, Any]:
+        """Merge left and right channel results with word-level timestamps"""
+        logger.info("Merging stereo results with word-level timestamps...")
+
+        left_words = left_result.get("words", [])
+        right_words = right_result.get("words", [])
+
+        for word in left_words:
+            word["channel"] = self.LEFT_CHANNEL_LABEL
+        for word in right_words:
+            word["channel"] = self.RIGHT_CHANNEL_LABEL
+
+        # Build segments แยกต่อ channel เพื่อให้เป็น "ประโยคใครประโยคมัน" ก่อน
+        left_segments = self._build_segments_from_words(left_words)
+        right_segments = self._build_segments_from_words(right_words)
+
+        # รวม segments แล้วเรียงตามเวลาเริ่มต้น
+        all_segments = sorted(left_segments + right_segments, key=lambda s: s.get("start", 0.0))
+
+        # Flatten คำจากทุก segment ตามลำดับเวลา
+        all_words: List[Dict[str, Any]] = []
+        for seg in all_segments:
+            all_words.extend(seg.get("words", []))
+
+        return {
+            "segments": all_segments,
+            "words": all_words,
+            "language": left_result.get("language", "th"),
+            "duration": duration,
+        }
+
+    def _build_segments_from_words(
+        self, words: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Build segments from word-level timestamps"""
+        if not words:
+            return []
+
+        segments = []
+        current_segment_words = []
+        last_end = None
+        current_channel = None
+        segment_id = 0
+
+        for word in words:
+            word_start = word.get("start", 0)
+            word_end = word.get("end", 0)
+            word_text = word.get("word", "")
+            word_channel = word.get("channel", self.AMBIGUOUS_CHANNEL_LABEL)
+
+            if not word_text.strip():
+                continue
+
+            if not current_segment_words:
+                current_segment_words.append(word)
+                last_end = word_end
+                current_channel = word_channel
+                continue
+
+            gap = word_start - last_end if last_end is not None else 0.0
+            speaker_changed = word_channel != current_channel
+
+            if gap > self.NEW_TURN_THRESHOLD or speaker_changed:
+                segments.append(
+                    self._create_segment(current_segment_words, segment_id)
+                )
+                segment_id += 1
+                current_segment_words = [word]
+                last_end = word_end
+                current_channel = word_channel
+                continue
+
+            current_segment_words.append(word)
+            last_end = word_end
+
+        if current_segment_words:
+            segments.append(self._create_segment(current_segment_words, segment_id))
+
+        return segments
+
+    def _create_segment(
+        self, words: List[Dict[str, Any]], segment_id: int = 0
+    ) -> Dict[str, Any]:
+        """Create a segment from a list of words"""
+        if not words:
+            return {}
+
+        sorted_words = sorted(words, key=lambda w: w.get("start", 0))
+        start = sorted_words[0].get("start", 0)
+        end = sorted_words[-1].get("end", 0)
+        text = "".join(w.get("word", "") for w in sorted_words)
+
+        speakers = [w.get("channel", "Unknown") for w in sorted_words]
+        speaker = max(set(speakers), key=speakers.count) if speakers else "Unknown"
+
+        return {
+            "id": segment_id,
+            "seek": 0,
+            "start": start,
+            "end": end,
+            "text": text,
+            "speaker": speaker,
+            "channel": speaker,
+            "words": sorted_words,
+        }
+
+    def _generate_json_structure(
+        self, transcription_result: Dict[str, Any], filename: str
+    ) -> Dict[str, Any]:
+        """Generate JSON structure matching sample_input.json format"""
+        segments = transcription_result.get("segments", [])
+
+        cleaned = clean_transcription(segments)
+        segments = cleaned["segments"]
+        words = cleaned["words"]
+
+        formatted_text = self._generate_formatted_text(segments)
+        simple_text = self._generate_simple_text(segments)
+
+        return {
+            "text": formatted_text,
+            "simple_text": simple_text,
+            "segments": segments,
+            "words": words,
+            "metadata": {
+                "is_stereo_merged": True,
+                "language": transcription_result.get("language", "th"),
+                "duration": transcription_result.get("duration", 0),
+                "processing_info": {
+                    "start_time": time.time(),
+                    "correction_passes": 0,
+                    "issues_detected": 0,
+                    "issues_fixed": 0,
+                    "rerun_performed": False,
+                    "end_time": time.time(),
+                    "total_duration": 0,
+                },
+                "audio_info": {
+                    "channels": 2,
+                    "codec_name": "pcm_s16le",
+                    "sample_rate": 16000,
+                    "duration": transcription_result.get("duration", 0),
+                    "format_name": "wav",
+                    "size": "0",
+                },
+                "generated_at": datetime.now().isoformat(),
+                "format_version": "1.0",
+            },
+        }
+
+    def _generate_formatted_text(self, segments: List[Dict[str, Any]]) -> str:
+        """Generate formatted text with timestamps and speaker labels"""
+        lines = []
+        for segment in segments:
+            start = segment.get("start", 0)
+            end = segment.get("end", 0)
+            text = segment.get("text", "").strip()
+            channel = segment.get("channel", "Unknown")
+
+            if text:
+                lines.append(f"[{start:.2f} --> {end:.2f}] [{channel}]: {text}")
+
+        return "\n".join(lines)
+
+    def _generate_simple_text(self, segments: List[Dict[str, Any]]) -> str:
+        """Generate simple text with speaker labels only"""
+        lines = []
+        for segment in segments:
+            text = segment.get("text", "").strip()
+            channel = segment.get("channel", "Unknown")
+
+            if text:
+                lines.append(f"[{channel}]: {text}")
+
+        return "\n".join(lines)
+
+
+class ProcessUnifiedStereoWav2FileAction:
+    def __init__(self):
+        self.choose_model_action = ProcessChooseModelAction()
+        self.base_action = ProcessUnifiedStereoAction()
+
+        self.LEFT_CHANNEL_LABEL = self.base_action.LEFT_CHANNEL_LABEL
+        self.RIGHT_CHANNEL_LABEL = self.base_action.RIGHT_CHANNEL_LABEL
+        self.AMBIGUOUS_CHANNEL_LABEL = self.base_action.AMBIGUOUS_CHANNEL_LABEL
+
+        self.NEW_TURN_THRESHOLD = self.base_action.NEW_TURN_THRESHOLD
+        self.FUSE_GAP = self.base_action.FUSE_GAP
+        self.REBUILD_GAP = self.base_action.REBUILD_GAP
+        self.MAX_WORD_DURATION = self.base_action.MAX_WORD_DURATION
+        self.max_concurrent_chunks = self.base_action.max_concurrent_chunks
+
+        self.device_count = self.base_action.device_count
+        self.agent_device = self.base_action.agent_device
+        self.caller_device = self.base_action.caller_device
+
+    async def execute(
+        self,
+        file_content: bytes,
+        filename: str,
+        force_model: Optional[str] = None,
+        skip_model_selection: bool = False,
+        auto_continue: bool = True,
+    ) -> Dict[str, Any]:
+        logger.info(f"Starting unified stereo WAV2FILE-style processing for: {filename}")
+
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
+                tmp_file.write(file_content)
+                tmp_path = tmp_file.name
+
+            selected_model = force_model or "pathumma"
+            model_selection_result = None
+
+            if not skip_model_selection:
+                logger.info("Running model selection (fixed-chunk) ...")
+                model_selection_result = {
+                    "chosen_model": selected_model,
+                    "reasoning": "Model selection skipped - using default for fixed-chunk pipeline",
+                }
+
+            logger.info(f"Processing stereo with fixed chunks using model: {selected_model}")
+
+            transcription_result = await self._process_stereo_fixed_chunks(
+                tmp_path, selected_model
+            )
+
+            logger.info("Generating JSON structure for fixed-chunk pipeline...")
+            json_structure = self.base_action._generate_json_structure(
+                transcription_result, filename
+            )
+
+            transcript_wrapper = {"transcript": json_structure}
+
+            process_json_result = None
+            if auto_continue:
+                logger.info("Auto-continuing to process_json (fixed-chunk placeholder)...")
+                process_json_result = {
+                    "status": "pending",
+                    "message": "Process_json integration pending for fixed-chunk pipeline",
+                }
+
+            result = {
+                "action": "unified_stereo_wav2file_processed",
+                "filename": filename,
+                "status": "completed",
+                "model_selection": model_selection_result,
+                "transcription": transcription_result,
+                "json_structure": json_structure,
+                "transcript": transcript_wrapper["transcript"],
+                "process_json_result": process_json_result,
+                "metadata": {
+                    "processed_at": datetime.now().isoformat(),
+                    "model_used": selected_model,
+                    "auto_continue": auto_continue,
+                    "devices": {
+                        "agent": self.agent_device,
+                        "caller": self.caller_device,
+                    },
+                    "pipeline": "fixed_chunk_wav2file_style",
+                },
+            }
+
+            try:
+                json_file_path = save_result_to_json(
+                    result, f"{filename}_unified_stereo_wav2file"
+                )
+                result["json_file_path"] = json_file_path
+
+                json_structure_path = save_result_to_json(
+                    json_structure,
+                    f"{filename}_json_structure_unified_stereo_wav2file",
+                )
+                json_structure["json_file_path"] = json_structure_path
+
+                logger.info(
+                    f"Unified stereo WAV2FILE-style results saved to: {json_file_path}"
+                )
+            except Exception as e:
+                logger.error(f"Failed to save WAV2FILE-style results to JSON: {str(e)}")
+
+            logger.info(
+                f"Unified stereo WAV2FILE-style processing completed for: {filename}"
+            )
+            return result
+
+        except Exception as e:
+            logger.error(f"Error in unified stereo WAV2FILE-style processing: {e}")
+            raise
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                    logger.debug(f"Cleaned up temporary file: {tmp_path}")
+                except Exception as cleanup_error:
+                    logger.warning(
+                        f"Failed to cleanup temporary file {tmp_path}: {cleanup_error}"
+                    )
+
+    async def _process_stereo_fixed_chunks(
+        self, audio_path: str, model_name: str
+    ) -> Dict[str, Any]:
+        logger.info(
+            f"Processing stereo with speaker separation using fixed chunks and {model_name}"
+        )
+
+        left_channel_data, right_channel_data, duration = await self.base_action._load_and_split_stereo(
+            audio_path
+        )
+
+        logger.info("Starting multiprocessing fixed-chunk transcription...")
+        logger.info(
+            f"Agent device: {self.agent_device}, Caller device: {self.caller_device}"
+        )
+
+        process_start = time.time()
+
+        result_queue = mp.Queue()
+
+        p0 = mp.Process(
+            target=_mp_worker_transcribe_channel_fixed,
+            args=(
+                left_channel_data["audio_bytes"],
+                model_name,
+                self.LEFT_CHANNEL_LABEL,
+                self.agent_device,
+                self.max_concurrent_chunks,
+                result_queue,
+            ),
+        )
+
+        p1 = mp.Process(
+            target=_mp_worker_transcribe_channel_fixed,
+            args=(
+                right_channel_data["audio_bytes"],
+                model_name,
+                self.RIGHT_CHANNEL_LABEL,
+                self.caller_device,
+                self.max_concurrent_chunks,
+                result_queue,
+            ),
+        )
+
+        print(f"[Main] Starting fixed-chunk processes at {time.time():.2f}...")
+        p0.start()
+        p1.start()
+
+        print("[Main] Fixed-chunk processes started, waiting for results...")
+
+        left_result: Optional[Dict[str, Any]] = None
+        right_result: Optional[Dict[str, Any]] = None
+        results_received = 0
+        max_timeout = 1800
+
+        while results_received < 2:
+            try:
+                channel_label, result = result_queue.get(timeout=max_timeout)
+                print(f"[Main] Received fixed-chunk result for {channel_label}")
+                if channel_label == self.LEFT_CHANNEL_LABEL:
+                    left_result = result
+                elif channel_label == self.RIGHT_CHANNEL_LABEL:
+                    right_result = result
+                results_received += 1
+            except Exception as e:
+                logger.error(
+                    f"[Main] Timeout waiting for fixed-chunk results from queue: {e}"
+                )
+                break
+
+        p0.join(timeout=10)
+        p1.join(timeout=10)
+
+        if p0.is_alive():
+            logger.warning(
+                "[Main] Left fixed-chunk process still alive after join, terminating..."
+            )
+            p0.terminate()
+        if p1.is_alive():
+            logger.warning(
+                "[Main] Right fixed-chunk process still alive after join, terminating..."
+            )
+            p1.terminate()
+
+        if left_result is None:
+            left_result = {
+                "channel": self.LEFT_CHANNEL_LABEL,
+                "speaker": self.LEFT_CHANNEL_LABEL,
+                "words": [],
+                "language": "th",
+                "duration": left_channel_data.get("duration", 0),
+            }
+
+        if right_result is None:
+            right_result = {
+                "channel": self.RIGHT_CHANNEL_LABEL,
+                "speaker": self.RIGHT_CHANNEL_LABEL,
+                "words": [],
+                "language": "th",
+                "duration": right_channel_data.get("duration", 0),
+            }
+
+        total_time = time.time() - process_start
+        print(f"[Main] All fixed-chunk processes completed in {total_time:.2f}s")
+        logger.info(
+            f"Multiprocessing fixed-chunk transcription completed in {total_time:.2f}s"
+        )
+
+        logger.info("Merging stereo results for fixed-chunk pipeline...")
+        merged_result = self.base_action._merge_stereo_results(
+            left_result, right_result, duration
+        )
+
+        return merged_result
+
+    async def execute_original(
         self,
         file_content: bytes,
         filename: str,

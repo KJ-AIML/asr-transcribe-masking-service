@@ -22,75 +22,11 @@ prompt_manager = PromptManager()
 logger = get_logger(__name__)
 
 
-# Nodes
-async def llm_call_context_improver(state: State):
-    # Convert transcript to string if it's a dict
-
-    logger.info("=== Processing transcript with context improver node ===")
-
-    if state.get("self_checker_feedback_status") == "FAIL":
-        logger.info(
-            "=== Feedback found, processing transcript with context improver node ==="
-        )
-
-        messages = [
-            SystemMessage(content=prompt_manager.context_improver),
-            HumanMessage(
-                content=f"""
-            Rewrite the transcript based on feedback:
-
-            ### Feedback:
-            {state["feedback"]}
-
-            ### Issues Found:
-            {state["issue_found"]}
-
-            ### Improved Transcript:
-            {str(state["improved_transcript"])}
-            """
-            ),
-        ]
-    else:
-        logger.info("=== No feedback found, passing original transcript ===")
-
-        messages = [
-            SystemMessage(content=prompt_manager.context_improver),
-            HumanMessage(content=str(state["original_transcript"])),
-        ]
-
-    response = await agent_manager.context_improver.ainvoke(messages)
-
-    logger.info("=== Context Improver Node Success ===")
-
-    return {"improved_transcript": response.model_dump()}
-
-
-async def llm_call_self_checker(state: State):
-    logger.info("=== Processing transcript with self checker node ===")
-
-    messages = [
-        SystemMessage(content=prompt_manager.self_checker),
-        HumanMessage(content=str(state["improved_transcript"])),
-    ]
-
-    response = await agent_manager.self_checker.ainvoke(messages)
-
-    logger.info("=== Self Checker Node Success ===")
-    logger.info(f"=== Self Checker Status: {response.status} ===")
-    logger.info(f"=== Feedback for Agent 1: {response.feedback_for_agent_1} ===")
-    return {
-        "self_checker_feedback_status": response.status,
-        "feedback": response.feedback_for_agent_1.model_dump()
-        if response.feedback_for_agent_1
-        else None,
-        "issue_found": [issue.model_dump() for issue in response.issues_found]
-        if response.issues_found
-        else None,
-    }
-
-
 async def llm_call_sensitive_data_classify(state: State):
     # logger.info("=== Processing transcript with sensitive data classify node ===")
+
+    logger.info("=== Sensitive Data Classify Node ===")
+    # logger.info(state["text_and_segment"])
 
     messages = [
         SystemMessage(content=prompt_manager.pii_router),
@@ -100,6 +36,9 @@ async def llm_call_sensitive_data_classify(state: State):
     response = await agent_manager.sensitive_data_detector.ainvoke(messages)
 
     logger.info("=== Sensitive Data Classify Node Success ===")
+
+    # logger.info(f"Sensitive Data Classify Response: {response.model_dump()}")
+
     # Return as a list with a single item to match expected format
     return {"sensitive_data_detected": [response.model_dump()]}
 
@@ -175,6 +114,7 @@ async def assign_pii_workers(state: State):
                 "total_digits_detected": section.get("total_digits_detected"),
                 "digit_groups": section.get("digit_groups", []),
                 "acknowledgment_segments": section.get("acknowledgment_segments", []),
+                "post_detection_context": section.get("post_detection_context", ""),
             }
 
             if section_type in [
@@ -517,6 +457,8 @@ async def llm_call_re_verify_batch(state: ReVerifyState):
     detection_data = state.get("detection_data", {})
     context_text = detection_data.get("context_text", "")
     detections = detection_data.get("detections", [])
+
+    logger.info(f"context_text: {context_text}\n detections: {detections}")
 
     messages = [
         SystemMessage(content=prompt_manager.re_verify_batch),

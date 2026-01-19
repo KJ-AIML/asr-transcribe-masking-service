@@ -73,7 +73,7 @@ class ProcessTranscriptUseCase:
 
         # Process each chunk
         processed_chunks = []
-        semaphore = asyncio.Semaphore(9)
+        semaphore = asyncio.Semaphore(6)
 
         async def process_single_chunk(chunk):
             async with semaphore:
@@ -242,7 +242,7 @@ class ProcessTranscriptUseCase:
                                 return chunk_result
 
                 # Process retries with semaphore to control concurrency
-                retry_semaphore = asyncio.Semaphore(3)
+                retry_semaphore = asyncio.Semaphore(6)
                 retry_tasks = []
 
                 async def process_with_semaphore(chunk_result):
@@ -420,7 +420,7 @@ class ProcessTranscriptUseCase:
             )
 
             # Process each chunk as a batch
-            re_verify_semaphore = asyncio.Semaphore(9)
+            re_verify_semaphore = asyncio.Semaphore(6)
 
             async def process_batch_reverify(i, chunk_data):
                 async with re_verify_semaphore:
@@ -476,6 +476,8 @@ class ProcessTranscriptUseCase:
                                 r.get("detection_id"): r for r in actual_results
                             }
 
+                            missing_count = 0
+
                             for detection in chunk_data["detections"]:
                                 det_id = detection["id"]
                                 result_data = results_map.get(
@@ -485,6 +487,9 @@ class ProcessTranscriptUseCase:
                                         "error": "Missing from batch result",
                                     },
                                 )
+
+                                if result_data.get("status") == "error":
+                                    missing_count += 1
 
                                 mapped_results.append(
                                     {
@@ -496,6 +501,11 @@ class ProcessTranscriptUseCase:
                                         "re_verify_result": result_data,
                                         "chunk_id": chunk_id,
                                     }
+                                )
+
+                            if missing_count > 0 and attempt < retries - 1:
+                                raise Exception(
+                                    f"{missing_count} detections in chunk {chunk_id} missing or error in batch result, triggering retry"
                                 )
 
                             return mapped_results

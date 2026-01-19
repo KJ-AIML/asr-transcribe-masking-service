@@ -84,11 +84,23 @@ def _gpu_worker_process(
 
             chunk_index, chunk_bytes, model_name, target_device = task
             chunk_start = time.time()
-            print(f"[GPU Worker {device}] Processing chunk {chunk_index} with model {model_name} (assigned: {assigned_models})")
+            print(
+                f"[GPU Worker {device}] Processing chunk {chunk_index} with model {model_name} (assigned: {assigned_models})"
+            )
 
             if model_name not in assigned_models:
-                print(f"[GPU Worker {device}] ERROR: Model {model_name} not in assigned models {assigned_models}")
-                result_queue.put((chunk_index, model_name, {}, 0, f"Model {model_name} not assigned to this worker"))
+                print(
+                    f"[GPU Worker {device}] ERROR: Model {model_name} not in assigned models {assigned_models}"
+                )
+                result_queue.put(
+                    (
+                        chunk_index,
+                        model_name,
+                        {},
+                        0,
+                        f"Model {model_name} not assigned to this worker",
+                    )
+                )
                 continue
 
             try:
@@ -297,11 +309,15 @@ class ProcessWav2FileAction:
                         results_dict[chunk_index]["error"] = error
                         results_dict[chunk_index]["transcriptions"][model_name] = {
                             "text": "" if model_name != "typhoon" else [],
-                            "error": error
+                            "error": error,
                         }
                     else:
-                        results_dict[chunk_index]["transcriptions"][model_name] = transcription
-                        results_dict[chunk_index]["processing_times_ms"][model_name] = processing_time
+                        results_dict[chunk_index]["transcriptions"][model_name] = (
+                            transcription
+                        )
+                        results_dict[chunk_index]["processing_times_ms"][model_name] = (
+                            processing_time
+                        )
 
                     collected_count += 1
                     logger.info(
@@ -764,14 +780,14 @@ class ProcessWav2FileAction:
             chunk_dict = {}
             for chunk_result in transcription_results:
                 chunk_id = chunk_result["chunk_index"]
-                
+
                 # Only include models that actually transcribed this chunk
                 model_transcriptions = {}
                 for model_name, trans_data in chunk_result["transcriptions"].items():
                     model_transcriptions[model_name] = {
                         "text": trans_data.get("text", "")
                     }
-                
+
                 chunk_dict[chunk_id] = {
                     "chunk_info": {
                         "start_time": chunk_result["start_sec"],

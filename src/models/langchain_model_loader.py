@@ -88,7 +88,7 @@ class LangchainModelLoader:
             "temperature": temperature,
             "top_p": kwargs.get("top_p", 0.90),
             "openai_api_base": settings.INFERENCE_SERVER_URL,
-            "max_retries": 0,
+            "max_retries": 1,
             "timeout": 1200,
         }
 

@@ -153,6 +153,10 @@ class CreditCardSection(BaseModel):
     acknowledgment_segments: list[int] | None = Field(
         None, description="Agent acknowledgment segments between digit groups"
     )
+    post_detection_context: str | None = Field(
+        None,
+        description="Guideline on what follows this section (e.g. 'User switches topic', 'Continues spelling digits')",
+    )
 
 
 class RoutingDecision(BaseModel):

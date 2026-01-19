@@ -4,7 +4,6 @@ from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy
 
 from src.agents.schemas.types import (
-    Agent1Output,
     AgentPaymentOutput,
     ChooseModelToTranscribeResult,
     ChunkAnalysis,
@@ -12,12 +11,10 @@ from src.agents.schemas.types import (
     ConsistencyCheckerResult,
     ConsistencyCheckerResultBatch,
     MaskerBatchResult,
-    MissingDetectionResult,
     PIIWorkerOutput,
     QAAuditorResult,
     ReVerifyBatchResult,
     ReVerifyResult,
-    SelfCheckerResult,
 )
 from src.agents.tools.tools import (
     get_context_extension,
@@ -38,8 +35,6 @@ class AgentManager:
 
         # Agent names for lazy loading
         self._agent_names = {
-            "context_improver": Agent1Output,
-            "self_checker": SelfCheckerResult,
             "sensitive_data_detector": ChunkAnalysis,
             "pii_sub_agent_worker": PIIWorkerOutput,
             "agent_payment": AgentPaymentOutput,
@@ -48,15 +43,12 @@ class AgentManager:
             "consistency_checker": ConsistencyCheckerResult,
             "consistency_checker_batch": ConsistencyCheckerResultBatch,
             "masker_batch_agent": MaskerBatchResult,
-            "missing_detection_agent": MissingDetectionResult,
             "qa_auditor": QAAuditorResult,
             "compare_chunk_wav_files": CompareChunkWavFilesResult,
             "choose_model_to_transcribe": ChooseModelToTranscribeResult,
         }
 
         self._agent_tools = {
-            "context_improver": [],
-            "self_checker": [],
             "sensitive_data_detector": [],
             "pii_sub_agent_worker": [],
             "agent_payment": [],
@@ -65,7 +57,6 @@ class AgentManager:
             "consistency_checker": [],
             "consistency_checker_batch": [],
             "masker_batch_agent": [],
-            "missing_detection_agent": [],
             "qa_auditor": [
                 get_context_extension,
                 get_detections_in_range,
@@ -136,16 +127,6 @@ class AgentManager:
 
     # Convenience properties for commonly used agents
     @property
-    def context_improver(self):
-        """Get the context improver agent"""
-        return self.get_agent("context_improver")
-
-    @property
-    def self_checker(self):
-        """Get the self checker agent"""
-        return self.get_agent("self_checker")
-
-    @property
     def sensitive_data_detector(self):
         """Get the sensitive data detector agent"""
         return self.get_agent("sensitive_data_detector")
@@ -184,11 +165,6 @@ class AgentManager:
     def masker_batch(self):
         """Get the Masker batch agent"""
         return self.get_agent("masker_batch_agent")
-
-    @property
-    def missing_detection(self):
-        """Get the Missing Detection agent"""
-        return self.get_agent("missing_detection_agent")
 
     @property
     def qa_auditor(self):

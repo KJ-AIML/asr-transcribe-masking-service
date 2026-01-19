@@ -2,6 +2,7 @@ from typing import Dict, Any, Optional
 from src.config.logs_config import get_logger
 from src.execution.actions.process_unified_stereo_action import (
     ProcessUnifiedStereoAction,
+    ProcessUnifiedStereoWav2FileAction,
 )
 
 logger = get_logger(__name__)
@@ -59,4 +60,48 @@ class ProcessUnifiedStereoUseCase:
 
         except Exception as e:
             logger.error(f"Error in unified stereo usecase: {e}")
+            raise
+
+
+class ProcessUnifiedStereoWav2FileUseCase:
+    def __init__(self, action: ProcessUnifiedStereoWav2FileAction):
+        self.action = action
+
+    async def execute(
+        self,
+        file_content: bytes,
+        filename: str,
+        force_model: Optional[str] = None,
+        skip_model_selection: bool = False,
+        auto_continue: bool = True,
+    ) -> Dict[str, Any]:
+        logger.info(
+            f"Starting unified stereo WAV2FILE-style processing for: {filename}"
+        )
+
+        try:
+            if not file_content:
+                raise ValueError("File content is empty")
+
+            if len(file_content) < 44:
+                raise ValueError("File too small to be a valid WAV file")
+
+            if not file_content[:4] == b"RIFF" or not file_content[8:12] == b"WAVE":
+                raise ValueError("Invalid WAV file format")
+
+            result = await self.action.execute(
+                file_content=file_content,
+                filename=filename,
+                force_model=force_model,
+                skip_model_selection=skip_model_selection,
+                auto_continue=auto_continue,
+            )
+
+            logger.info(
+                f"Unified stereo WAV2FILE-style processing completed for: {filename}"
+            )
+            return result
+
+        except Exception as e:
+            logger.error(f"Error in unified stereo WAV2FILE-style usecase: {e}")
             raise

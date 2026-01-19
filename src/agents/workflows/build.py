@@ -10,8 +10,6 @@ from src.agents.schemas.types import (
     ChooseModelToTranscribeState,
 )
 from src.agents.workflows.nodes import (
-    llm_call_context_improver,
-    llm_call_self_checker,
     llm_call_sensitive_data_classify,
     pii_worker,
     synthesizer,
@@ -33,21 +31,16 @@ def build_workflow() -> Any:
     Build and compile the ASR workflow graph.
 
     This function creates a StateGraph workflow that processes transcripts through
-    multiple stages including context improvement, self-checking, PII detection,
-    and synthesis.
+    multiple stages including PII detection, and synthesis.
 
     Returns:
         Compiled workflow graph ready for execution
 
     Workflow Flow:
-        1. START -> llm_call_context_improver
-        2. llm_call_context_improver -> llm_call_self_checker
-        3. llm_call_self_checker -> (conditional) ->
-           - Accepted -> llm_call_sensitive_data_classify
-           - Rejected -> llm_call_context_improver
-        4. llm_call_sensitive_data_classify -> assign_pii_workers -> pii_worker
-        5. pii_worker -> synthesizer
-        6. synthesizer -> END
+        1. START -> llm_call_sensitive_data_classify
+        2. llm_call_sensitive_data_classify -> assign_pii_workers -> pii_worker
+        3. pii_worker -> synthesizer
+        4. synthesizer -> END
     """
     logger.info("Building ASR workflow...")
 
@@ -56,38 +49,17 @@ def build_workflow() -> Any:
 
     # Add the nodes
     builder.add_node(
-        "llm_call_context_improver",
-        llm_call_context_improver,
+        "llm_call_sensitive_data_classify", llm_call_sensitive_data_classify,
         retry_policy=RetryPolicy(max_attempts=1),
     )
-    builder.add_node(
-        "llm_call_self_checker",
-        llm_call_self_checker,
+    builder.add_node("pii_worker", pii_worker,
         retry_policy=RetryPolicy(max_attempts=1),
     )
-    builder.add_node(
-        "llm_call_sensitive_data_classify",
-        llm_call_sensitive_data_classify,
+    builder.add_node("synthesizer", synthesizer,
         retry_policy=RetryPolicy(max_attempts=1),
-    )
-    builder.add_node("pii_worker", pii_worker, retry_policy=RetryPolicy(max_attempts=1))
-    builder.add_node(
-        "synthesizer", synthesizer, retry_policy=RetryPolicy(max_attempts=1)
     )
 
-    # Add edges to connect nodes
     builder.add_edge(START, "llm_call_sensitive_data_classify")
-    # builder.add_edge("llm_call_context_improver", "llm_call_self_checker")
-    # builder.add_conditional_edges(
-    #     "llm_call_self_checker",
-    #     route_check,
-    #     {
-    #         "Accepted": "llm_call_sensitive_data_classify",
-    #         "Rejected": "llm_call_context_improver",
-    #     },
-    # )
-
-    # builder.add_edge("llm_call_sensitive_data_classify", END)
 
     builder.add_conditional_edges(
         "llm_call_sensitive_data_classify", assign_pii_workers, ["pii_worker"]
@@ -123,8 +95,8 @@ def build_re_verify_workflow() -> Any:
     builder = StateGraph(ReVerifyState)
 
     # Add the nodes
-    builder.add_node(
-        "re_verify", llm_call_re_verify_batch, retry_policy=RetryPolicy(max_attempts=1)
+    builder.add_node("re_verify", llm_call_re_verify_batch,
+        retry_policy=RetryPolicy(max_attempts=1),
     )
 
     # Add edges to connect nodes
@@ -160,8 +132,8 @@ def build_masker_workflow() -> Any:
     builder = StateGraph(MaskerBatchState)
 
     # Add the nodes
-    builder.add_node(
-        "masker_batch", llm_call_masker_batch, retry_policy=RetryPolicy(max_attempts=1)
+    builder.add_node("masker_batch", llm_call_masker_batch,
+        retry_policy=RetryPolicy(max_attempts=1),
     )
 
     # Add edges to connect nodes
@@ -196,7 +168,9 @@ def build_qa_auditor_workflow() -> Any:
     builder = StateGraph(QAAuditorState)
 
     # Add the nodes
-    builder.add_node("qa_auditor", llm_call_qa_auditor)
+    builder.add_node("qa_auditor", llm_call_qa_auditor,
+        retry_policy=RetryPolicy(max_attempts=1),
+    )
 
     # Add edges to connect nodes
     builder.add_edge(START, "qa_auditor")
@@ -230,7 +204,9 @@ def build_compare_chunk_wav_files_workflow() -> Any:
     builder = StateGraph(CompareChunkWavFilesState)
 
     # Add the nodes
-    builder.add_node("compare_chunk_wav_files", llm_call_compare_chunk_wav_files)
+    builder.add_node("compare_chunk_wav_files", llm_call_compare_chunk_wav_files,
+        retry_policy=RetryPolicy(max_attempts=1),
+    )
 
     # Add edges to connect nodes
     builder.add_edge(START, "compare_chunk_wav_files")
@@ -264,7 +240,9 @@ def build_choose_model_to_transcribe_workflow() -> Any:
     builder = StateGraph(ChooseModelToTranscribeState)
 
     # Add the nodes
-    builder.add_node("choose_model_to_transcribe", llm_call_choose_model_to_transcribe)
+    builder.add_node("choose_model_to_transcribe", llm_call_choose_model_to_transcribe,
+        retry_policy=RetryPolicy(max_attempts=1),
+    )
 
     # Add edges to connect nodes
     builder.add_edge(START, "choose_model_to_transcribe")

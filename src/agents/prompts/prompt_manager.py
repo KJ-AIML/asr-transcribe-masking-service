@@ -15,8 +15,6 @@ class PromptManager:
 
         # Cache for loaded prompts
         self._subagents: Optional[Dict[str, Any]] = None
-        self._context_improver: Optional[str] = None
-        self._self_checker: Optional[str] = None
         self._pii_router: Optional[str] = None
         self._re_verify: Optional[str] = None
         self._re_verify_batch: Optional[str] = None
@@ -55,22 +53,6 @@ class PromptManager:
             self._subagents = self._load_subagents()
             logger.info(f"Loaded {len(self._subagents)} subagent configurations")
         return self._subagents
-
-    @property
-    def context_improver(self) -> str:
-        """Lazy load context improver prompt"""
-        if self._context_improver is None:
-            self._context_improver = self._load_prompt("agents/context_improver.md")
-            logger.debug("Context improver prompt loaded")
-        return self._context_improver
-
-    @property
-    def self_checker(self) -> str:
-        """Lazy load self checker prompt"""
-        if self._self_checker is None:
-            self._self_checker = self._load_prompt("agents/self_checker.md")
-            logger.debug("Self checker prompt loaded")
-        return self._self_checker
 
     @property
     def pii_router(self) -> str:
@@ -131,16 +113,6 @@ class PromptManager:
             self._qa_auditor = self._load_prompt("agents/agent_qa_auditor.md")
             logger.debug("QA Auditor prompt loaded")
         return self._qa_auditor
-
-    @property
-    def missing_detection(self) -> str:
-        """Lazy load Missing Detection prompt"""
-        if self._missing_detection is None:
-            self._missing_detection = self._load_prompt(
-                "agents/agent_missing_detection.md"
-            )
-            logger.debug("Missing Detection prompt loaded")
-        return self._missing_detection
 
     @property
     def compare_chunk_wav_files(self) -> str:
