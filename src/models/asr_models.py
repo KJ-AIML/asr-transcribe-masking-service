@@ -281,7 +281,7 @@ class PathummaASR(ASRModelBase):
                     language=self.lang,
                     task=self.task,
                     # Accuracy options
-                    beam_size=5,  # greedy for speed, increase for accuracy
+                    beam_size=3,  # greedy for speed, increase for accuracy
                     vad=False,  # We handle VAD separately
                     detect_disfluencies=False,
                     compute_word_confidence=True,
