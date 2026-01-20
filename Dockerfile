@@ -12,6 +12,8 @@ RUN uv sync --frozen
 
 COPY . .
 
+RUN uv run python -c "import torch; torch.hub.load('snakers4/silero-vad', 'silero_vad', trust_repo=True)"
+
 ENV PYTHONPATH=/app/src
 
 CMD ["uv", "run", "python", "-m", "src.api.main"]
