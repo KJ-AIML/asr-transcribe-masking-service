@@ -215,10 +215,16 @@ class PathummaASR(ASRModelBase):
         try:
             import whisper_timestamped as whisper
 
-            # whisper-timestamped can load HuggingFace models directly
-            # Use the model_name (HuggingFace repo ID) to load
+            # Ensure model is cached locally (or download if online)
+            # This returns the local snapshot path so we don't hit HF online checks unnecessarily
+            local_model_path = self._download_local_model()
+
+            logger.info(f"Loading Pathumma model from local path: {local_model_path}")
+
+            # whisper-timestamped can load HuggingFace models directly, but passing the
+            # local path ensures we use the offline cache without validation requests.
             self._whisper_model = whisper.load_model(
-                self.model_name,
+                local_model_path,
                 device=self.device
                 if self.device
                 else "cuda"
@@ -275,7 +281,7 @@ class PathummaASR(ASRModelBase):
                     language=self.lang,
                     task=self.task,
                     # Accuracy options
-                    beam_size=1,  # greedy for speed, increase for accuracy
+                    beam_size=5,  # greedy for speed, increase for accuracy
                     vad=False,  # We handle VAD separately
                     detect_disfluencies=False,
                     compute_word_confidence=True,

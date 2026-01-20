@@ -222,7 +222,7 @@ def clean_transcription(
             words = segment.get("words", [])
             segment["words"] = deduplicate_consecutive_words(words)
             # Rebuild text from words
-            segment["text"] = " ".join(w.get("word", "") for w in segment["words"])
+            segment["text"] = "".join(w.get("word", "") for w in segment["words"])
 
     # Step 3: Merge short segments
     if merge_short:
