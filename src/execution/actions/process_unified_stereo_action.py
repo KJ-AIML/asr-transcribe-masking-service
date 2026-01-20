@@ -641,27 +641,39 @@ class ProcessUnifiedStereoAction:
         segments = []
         current_segment_words = []
         last_end = None
+        last_channel = None
         segment_id = 0  # Running counter for segment IDs
 
         for word in words:
             word_start = word.get("start", 0)
             word_end = word.get("end", 0)
             word_text = word.get("word", "")
+            word_channel = word.get("channel", "Unknown")
 
             if not word_text.strip():
                 continue
 
-            if last_end is not None:
+            # Check if we should start a new segment:
+            # 1. Channel changed (speaker changed)
+            # 2. OR time gap is large enough
+            should_split = False
+            if last_channel is not None and word_channel != last_channel:
+                # Speaker changed - always split
+                should_split = True
+            elif last_end is not None:
                 gap = word_start - last_end
-                if gap > self.NEW_TURN_THRESHOLD and current_segment_words:
-                    segments.append(
-                        self._create_segment(current_segment_words, segment_id)
-                    )
-                    segment_id += 1
-                    current_segment_words = []
+                if gap > self.NEW_TURN_THRESHOLD:
+                    # Large time gap - split
+                    should_split = True
+
+            if should_split and current_segment_words:
+                segments.append(self._create_segment(current_segment_words, segment_id))
+                segment_id += 1
+                current_segment_words = []
 
             current_segment_words.append(word)
             last_end = word_end
+            last_channel = word_channel
 
         if current_segment_words:
             segments.append(self._create_segment(current_segment_words, segment_id))
