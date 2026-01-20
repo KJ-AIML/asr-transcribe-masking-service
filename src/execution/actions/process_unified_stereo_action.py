@@ -173,6 +173,11 @@ def _mp_transcribe_chunked(
         vad_threshold=settings.VAD_TENVAD_THRESHOLD,
         vad_hop_size=settings.VAD_TENVAD_HOP_SIZE,
         vad_padding=settings.VAD_PADDING_SECONDS,
+        # Silero VAD parameters
+        silero_threshold=settings.VAD_SILERO_THRESHOLD,
+        silero_min_speech_ms=settings.VAD_SILERO_MIN_SPEECH_MS,
+        silero_min_silence_ms=settings.VAD_SILERO_MIN_SILENCE_MS,
+        silero_speech_pad_ms=settings.VAD_SILERO_SPEECH_PAD_MS,
     )
 
     print(

@@ -297,6 +297,11 @@ def vad_segment_audio_bytes(
     vad_threshold: float = 0.3,  # TEN VAD threshold (0-1)
     vad_hop_size: int = 256,  # TEN VAD hop size
     vad_padding: float = 0.1,  # Padding around speech regions (seconds)
+    # Silero VAD specific parameters
+    silero_threshold: float = 0.3,  # Silero VAD threshold
+    silero_min_speech_ms: int = 300,  # Min speech duration (ms)
+    silero_min_silence_ms: int = 200,  # Min silence duration (ms)
+    silero_speech_pad_ms: int = 100,  # Speech padding (ms)
 ) -> Dict[str, Any]:
     try:
         buffer = io.BytesIO(wav_bytes)
@@ -444,7 +449,13 @@ def vad_segment_audio_bytes(
                     if audio_tensor.dim() == 1:
                         audio_tensor = audio_tensor.unsqueeze(0)
                     speech_ts = get_speech_timestamps(
-                        audio_tensor, model, sampling_rate=sr
+                        audio_tensor,
+                        model,
+                        sampling_rate=sr,
+                        threshold=silero_threshold,
+                        min_speech_duration_ms=silero_min_speech_ms,
+                        min_silence_duration_ms=silero_min_silence_ms,
+                        speech_pad_ms=silero_speech_pad_ms,
                     )
 
                     for ts in speech_ts:

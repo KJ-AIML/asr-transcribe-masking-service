@@ -49,9 +49,18 @@ class Settings(BaseSettings):
 
     # VAD / audio processing
     USE_ML_VAD: bool = True  # Enable VAD to filter silence before transcription
-    VAD_ENGINE: str = "ten"  # Options: "silero", "ten"
+    VAD_ENGINE: str = "silero"  # Options: "silero", "ten"
+    # TEN VAD settings
     VAD_TENVAD_THRESHOLD: float = 0.3  # Typhoon BE default
     VAD_TENVAD_HOP_SIZE: int = 256  # Frame hop size for TEN VAD
+
+    # Silero VAD settings
+    VAD_SILERO_THRESHOLD: float = 0.3  # VAD threshold (0-1), lower = more sensitive
+    VAD_SILERO_MIN_SPEECH_MS: int = 300  # Minimum speech duration (milliseconds)
+    VAD_SILERO_MIN_SILENCE_MS: int = 200  # Minimum silence to split (milliseconds)
+    VAD_SILERO_SPEECH_PAD_MS: int = 100  # Padding around speech (milliseconds)
+
+    # Common VAD settings
     VAD_MIN_SPEECH_DURATION: float = 0.3  # Minimum speech duration (seconds)
     MIN_SILENCE_DURATION: float = 0.2  # Minimum silence to split (seconds)
     VAD_PADDING_SECONDS: float = 0.1  # Padding around speech regions
