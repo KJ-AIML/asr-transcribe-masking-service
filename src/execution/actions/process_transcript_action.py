@@ -32,10 +32,13 @@ class ProcessTranscriptAction:
             #     }
             # })
 
-            # Create segments with words for word-level timing calculation
+            # Renumber segment IDs to 0,1,2,3... for this chunk
+            # This ensures LLM-generated segment_ids match actual segment IDs
             segments_with_words = []
-            for segment in chunk_data.get("segments", []):
-                segments_with_words.append(segment)
+            for i, segment in enumerate(chunk_data.get("segments", [])):
+                segment_copy = segment.copy()
+                segment_copy["id"] = i
+                segments_with_words.append(segment_copy)
 
             result = await self._workflow.ainvoke(
                 {

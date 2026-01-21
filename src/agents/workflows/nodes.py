@@ -90,7 +90,7 @@ async def llm_call_self_checker(state: State):
 
 
 async def llm_call_sensitive_data_classify(state: State):
-    logger.info("=== Processing transcript with sensitive data classify node ===")
+    # logger.info("=== Processing transcript with sensitive data classify node ===")
 
     messages = [
         SystemMessage(content=prompt_manager.pii_router),
@@ -319,7 +319,9 @@ async def pii_worker(state: WorkerState):
         overview_text = state["text_and_segment"].get("text", "")
 
     # Debug: Log PII info content before sending to Payment Agent
-    # logger.info(f"DEBUG: PII Info content for {state['agent_name']}: {state['pii_info']}")
+    # logger.info(
+    #     f"DEBUG: PII Info content for {state['agent_name']}: {state['pii_info']}"
+    # )
 
     messages = [
         SystemMessage(content=agent_config["system_prompt"]),

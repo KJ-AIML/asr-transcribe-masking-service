@@ -27,6 +27,7 @@ from src.models.transcription_model_adapter import (
 from src.utils.file.json_utils import save_result_to_json
 from src.utils.audio.chunk_wav_audio import vad_segment_audio_bytes
 from src.utils.transcript.post_processor import TranscriptPostProcessor
+from src.utils.transcript.transcript_cleaner import clean_transcription
 
 
 logger = get_logger(__name__)
@@ -164,10 +165,19 @@ def _mp_transcribe_chunked(
         wav_bytes=audio_bytes,
         target_sr=16_000,
         top_db=30.0,
-        min_speech_sec=0.25,
-        min_silence_sec=0.25,
+        min_speech_sec=settings.VAD_MIN_SPEECH_DURATION,
+        min_silence_sec=settings.MIN_SILENCE_DURATION,
         max_segment_sec=60.0,
         use_ml_vad=settings.USE_ML_VAD,
+        vad_engine=settings.VAD_ENGINE,
+        vad_threshold=settings.VAD_TENVAD_THRESHOLD,
+        vad_hop_size=settings.VAD_TENVAD_HOP_SIZE,
+        vad_padding=settings.VAD_PADDING_SECONDS,
+        # Silero VAD parameters
+        silero_threshold=settings.VAD_SILERO_THRESHOLD,
+        silero_min_speech_ms=settings.VAD_SILERO_MIN_SPEECH_MS,
+        silero_min_silence_ms=settings.VAD_SILERO_MIN_SILENCE_MS,
+        silero_speech_pad_ms=settings.VAD_SILERO_SPEECH_PAD_MS,
     )
 
     print(
@@ -220,9 +230,9 @@ def _mp_transcribe_chunked(
         max_repeat=3,
         repetition_window_sec=2.0,
     )
-    
+
     dedup_words = post_processor.process_words(all_words)
-    
+
     result = {
         "channel": channel_label,
         "speaker": channel_label,
@@ -631,30 +641,48 @@ class ProcessUnifiedStereoAction:
         segments = []
         current_segment_words = []
         last_end = None
+        last_channel = None
+        segment_id = 0  # Running counter for segment IDs
 
         for word in words:
             word_start = word.get("start", 0)
             word_end = word.get("end", 0)
             word_text = word.get("word", "")
+            word_channel = word.get("channel", "Unknown")
 
             if not word_text.strip():
                 continue
 
-            if last_end is not None:
+            # Check if we should start a new segment:
+            # 1. Channel changed (speaker changed)
+            # 2. OR time gap is large enough
+            should_split = False
+            if last_channel is not None and word_channel != last_channel:
+                # Speaker changed - always split
+                should_split = True
+            elif last_end is not None:
                 gap = word_start - last_end
-                if gap > self.NEW_TURN_THRESHOLD and current_segment_words:
-                    segments.append(self._create_segment(current_segment_words))
-                    current_segment_words = []
+                if gap > self.NEW_TURN_THRESHOLD:
+                    # Large time gap - split
+                    should_split = True
+
+            if should_split and current_segment_words:
+                segments.append(self._create_segment(current_segment_words, segment_id))
+                segment_id += 1
+                current_segment_words = []
 
             current_segment_words.append(word)
             last_end = word_end
+            last_channel = word_channel
 
         if current_segment_words:
-            segments.append(self._create_segment(current_segment_words))
+            segments.append(self._create_segment(current_segment_words, segment_id))
 
         return segments
 
-    def _create_segment(self, words: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def _create_segment(
+        self, words: List[Dict[str, Any]], segment_id: int = 0
+    ) -> Dict[str, Any]:
         """Create a segment from a list of words"""
         if not words:
             return {}
@@ -668,6 +696,8 @@ class ProcessUnifiedStereoAction:
         speaker = max(set(speakers), key=speakers.count) if speakers else "Unknown"
 
         return {
+            "id": segment_id,
+            "seek": 0,
             "start": start,
             "end": end,
             "text": text,
@@ -683,7 +713,11 @@ class ProcessUnifiedStereoAction:
         Generate JSON structure matching sample_input.json format
         """
         segments = transcription_result.get("segments", [])
-        words = transcription_result.get("words", [])
+
+        # Clean transcription: filter ringtones, deduplicate words, merge short segments
+        cleaned = clean_transcription(segments)
+        segments = cleaned["segments"]
+        words = cleaned["words"]
 
         # Generate formatted text
         formatted_text = self._generate_formatted_text(segments)

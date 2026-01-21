@@ -40,6 +40,15 @@ def extract_detections_with_timestamps(
                 f"Found {len(chunk['masked_credit_cards'])} masked credit cards in chunk {chunk.get('chunk_id', 'unknown')}"
             )
             for detection in chunk["masked_credit_cards"]:
+                detection_type = detection.get("type", "card_number")
+
+                # Skip expiration_date detections (BA policy change - no need to re-verify)
+                if detection_type == "expiration_date":
+                    logger.debug(
+                        f"Skipping expiration_date detection in chunk {chunk.get('chunk_id', 'unknown')}"
+                    )
+                    continue
+
                 detection_data = {
                     "chunk_id": chunk["chunk_id"],
                     "detection": detection,
@@ -168,9 +177,18 @@ def extract_detections_by_chunk(
         # Extract from masked_credit_cards
         if chunk.get("has_credit_card") and "masked_credit_cards" in chunk:
             for detection in chunk["masked_credit_cards"]:
+                detection_type = detection.get("type", "card_number")
+
+                # Skip expiration_date detections (BA policy change - no need to re-verify)
+                if detection_type == "expiration_date":
+                    logger.debug(
+                        f"Skipping expiration_date detection in chunk {chunk.get('chunk_id')}"
+                    )
+                    continue
+
                 detection_data = {
                     "id": detection.get("id", f"det_{len(chunk_detections)}"),
-                    "type": detection.get("type", "card_number"),
+                    "type": detection_type,
                     "original_text": detection.get("original_text", ""),
                     "start_time": detection.get("start_time", 0),
                     "end_time": detection.get("end_time", 0),

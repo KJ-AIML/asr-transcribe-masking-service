@@ -26,6 +26,8 @@ asr-service-api.tar
 
 src/data/
 
+tybe/
+
 asr_models_cache/
 
 asr-service-with-models.tar
