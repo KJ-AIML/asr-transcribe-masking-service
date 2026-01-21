@@ -300,7 +300,6 @@ class PathummaASR(ASRModelBase):
                             "word": word_info.get("text", ""),
                             "start": word_info.get("start", 0.0),
                             "end": word_info.get("end", 0.0),
-                            "probability": word_info.get("confidence", 0.0),
                         }
                     )
 

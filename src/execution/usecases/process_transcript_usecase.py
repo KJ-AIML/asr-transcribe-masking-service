@@ -73,7 +73,7 @@ class ProcessTranscriptUseCase:
 
         # Process each chunk
         processed_chunks = []
-        semaphore = asyncio.Semaphore(9)
+        semaphore = asyncio.Semaphore(5)
 
         async def process_single_chunk(chunk):
             async with semaphore:
@@ -242,7 +242,7 @@ class ProcessTranscriptUseCase:
                                 return chunk_result
 
                 # Process retries with semaphore to control concurrency
-                retry_semaphore = asyncio.Semaphore(3)
+                retry_semaphore = asyncio.Semaphore(5)
                 retry_tasks = []
 
                 async def process_with_semaphore(chunk_result):
@@ -375,7 +375,7 @@ class ProcessTranscriptUseCase:
                             return chunk
 
             # Process retries with semaphore to control concurrency
-            retry_semaphore = asyncio.Semaphore(6)
+            retry_semaphore = asyncio.Semaphore(5)
             retry_tasks = []
 
             async def process_with_semaphore(chunk):
@@ -420,7 +420,7 @@ class ProcessTranscriptUseCase:
             )
 
             # Process each chunk as a batch
-            re_verify_semaphore = asyncio.Semaphore(9)
+            re_verify_semaphore = asyncio.Semaphore(5)
 
             async def process_batch_reverify(i, chunk_data):
                 async with re_verify_semaphore:

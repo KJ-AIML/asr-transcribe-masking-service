@@ -50,15 +50,18 @@ Analyze the provided segments and apply masking to:
 
 <thai_number_mapping>
 You must accurately identify these tokens as "DIGITS" to be masked:
-- **Thai Words:** ศูนย์(0), หนึ่ง(1), สอง(2), สาม(3), สี่(4), ห้า(5), หก(6), เจ็ด(7), แปด(8), เก้า(9).
-- **ASR Errors (Phonetic):**
-  - "ก้าว" -> 9
-  - "สูญ", "ศูน" -> 0
-  - "เจต" -> 7
-  - "ซี่" -> 4
-  - "นึง" -> 1
-  - "ยี่" -> 2
-  - "เอ็ด" -> 1
+| Thai Token | Digit | ASR Error Token | Digit |
+|------------|-------|-----------------|-------|
+| ศูนย์ | 0 | สูญ, ศูน | 0 |
+| หนึ่ง | 1 | นึง, เอ็ด | 1 |
+| สอง | 2 | ยี่ | 2 |
+| สาม | 3 | - | 3 |
+| สี่ | 4 | ซี่ | 4 |
+| ห้า | 5 | - | 5 |
+| หก | 6 | - | 6 |
+| เจ็ด | 7 | เจต | 7 |
+| แปด | 8 | - | 8 |
+| เก้า | 9 | ก้าว | 9 |
 </thai_number_mapping>
 
 ---

@@ -264,7 +264,7 @@ class ProcessUnifiedStereoAction:
         self.AMBIGUOUS_CHANNEL_LABEL = "Unknown"
 
         # Processing thresholds
-        self.NEW_TURN_THRESHOLD = 0.3
+        self.NEW_TURN_THRESHOLD = 0.5
         self.FUSE_GAP = 0.25
         self.REBUILD_GAP = 0.0
         self.MAX_WORD_DURATION = 2.0
