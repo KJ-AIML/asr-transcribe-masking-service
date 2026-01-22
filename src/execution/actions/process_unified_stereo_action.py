@@ -168,6 +168,7 @@ def _mp_transcribe_chunked(
         min_speech_sec=settings.VAD_MIN_SPEECH_DURATION,
         min_silence_sec=settings.MIN_SILENCE_DURATION,
         max_segment_sec=60.0,
+        merge_gap_sec=settings.VAD_MERGE_GAP_SECONDS,
         use_ml_vad=settings.USE_ML_VAD,
         vad_engine=settings.VAD_ENGINE,
         vad_threshold=settings.VAD_TENVAD_THRESHOLD,
@@ -678,7 +679,41 @@ class ProcessUnifiedStereoAction:
         if current_segment_words:
             segments.append(self._create_segment(current_segment_words, segment_id))
 
-        return segments
+        return self._merge_adjacent_segments(
+            segments,
+            max_gap=settings.VAD_MERGE_GAP_SECONDS,
+        )
+
+    def _merge_adjacent_segments(
+        self,
+        segments: List[Dict[str, Any]],
+        max_gap: float,
+    ) -> List[Dict[str, Any]]:
+        """Merge adjacent segments with small gaps and same speaker."""
+        if not segments or max_gap <= 0:
+            return segments
+
+        merged: List[Dict[str, Any]] = []
+        current = segments[0].copy()
+        current["words"] = list(segments[0].get("words", []))
+
+        for segment in segments[1:]:
+            gap = segment.get("start", 0) - current.get("end", 0)
+            same_speaker = current.get("speaker") == segment.get("speaker")
+            if gap <= max_gap and same_speaker:
+                current["words"].extend(segment.get("words", []))
+                current["end"] = segment.get("end", current["end"])
+                current["text"] = " ".join(
+                    w.get("word", "") for w in current["words"]
+                )
+                continue
+
+            merged.append(current)
+            current = segment.copy()
+            current["words"] = list(segment.get("words", []))
+
+        merged.append(current)
+        return merged
 
     def _create_segment(
         self, words: List[Dict[str, Any]], segment_id: int = 0

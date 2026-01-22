@@ -292,6 +292,7 @@ def vad_segment_audio_bytes(
     min_speech_sec: float = 0.3,
     min_silence_sec: float = 0.3,
     max_segment_sec: float = 60.0,
+    merge_gap_sec: float | None = None,
     use_ml_vad: bool = False,
     vad_engine: str = "ten",  # Options: "silero", "ten"
     vad_threshold: float = 0.3,  # TEN VAD threshold (0-1)
@@ -303,6 +304,44 @@ def vad_segment_audio_bytes(
     silero_min_silence_ms: int = 200,  # Min silence duration (ms)
     silero_speech_pad_ms: int = 100,  # Speech padding (ms)
 ) -> Dict[str, Any]:
+    def _merge_segments_by_gap(
+        segments: List[Tuple[int, int]],
+        sr: int,
+        max_gap_sec: float | None,
+    ) -> List[Tuple[int, int]]:
+        if not segments or not max_gap_sec or max_gap_sec <= 0:
+            return segments
+        merged = [segments[0]]
+        for start, end in segments[1:]:
+            last_start, last_end = merged[-1]
+            gap_sec = (start - last_end) / float(sr)
+            if gap_sec <= max_gap_sec:
+                merged[-1] = (last_start, max(last_end, end))
+            else:
+                merged.append((start, end))
+        return merged
+
+    def _split_by_max_duration(
+        segments: List[Tuple[int, int]],
+        sr: int,
+        max_duration_sec: float,
+    ) -> List[Tuple[int, int]]:
+        if not segments or max_duration_sec <= 0:
+            return segments
+        max_samples = int(max_duration_sec * sr)
+        split_segments: List[Tuple[int, int]] = []
+        for start, end in segments:
+            if end - start <= max_samples:
+                split_segments.append((start, end))
+                continue
+            current = start
+            while current < end:
+                seg_end = min(current + max_samples, end)
+                if seg_end > current:
+                    split_segments.append((current, seg_end))
+                current = seg_end
+        return split_segments
+
     try:
         buffer = io.BytesIO(wav_bytes)
         y, sr = librosa.load(buffer, sr=None, mono=True)
@@ -422,19 +461,7 @@ def vad_segment_audio_bytes(
                     for start_sec, end_sec in regions:
                         start_sample = int(start_sec * sr)
                         end_sample = int(end_sec * sr)
-                        duration_sec = end_sec - start_sec
-
-                        if duration_sec <= max_segment_sec:
-                            segments_samples.append((start_sample, end_sample))
-                        else:
-                            # Split long segments
-                            max_samples = int(max_segment_sec * sr)
-                            current = start_sample
-                            while current < end_sample:
-                                seg_end = min(current + max_samples, end_sample)
-                                if seg_end > current:
-                                    segments_samples.append((current, seg_end))
-                                current = seg_end
+                        segments_samples.append((start_sample, end_sample))
 
                     logger.info(
                         f"TEN VAD found {len(segments_samples)} speech segments"
@@ -464,16 +491,7 @@ def vad_segment_audio_bytes(
                         duration_sec = (end - start) / sr
                         if duration_sec < min_speech_sec:
                             continue
-                        if duration_sec <= max_segment_sec:
-                            segments_samples.append((start, end))
-                            continue
-                        max_samples = int(max_segment_sec * sr)
-                        current = start
-                        while current < end:
-                            seg_end = min(current + max_samples, end)
-                            if seg_end > current:
-                                segments_samples.append((current, seg_end))
-                            current = seg_end
+                        segments_samples.append((start, end))
 
                     logger.info(
                         f"Silero VAD found {len(segments_samples)} speech segments"
@@ -505,16 +523,17 @@ def vad_segment_audio_bytes(
                 duration_sec = (end - start) / sr
                 if duration_sec < min_speech_sec:
                     continue
-                if duration_sec <= max_segment_sec:
-                    segments_samples.append((start, end))
-                    continue
-                max_samples = int(max_segment_sec * sr)
-                current = start
-                while current < end:
-                    seg_end = min(current + max_samples, end)
-                    if seg_end > current:
-                        segments_samples.append((current, seg_end))
-                    current = seg_end
+                segments_samples.append((start, end))
+
+        if segments_samples:
+            segments_samples = sorted(segments_samples, key=lambda s: s[0])
+            segments_samples = _merge_segments_by_gap(
+                segments_samples, sr, merge_gap_sec
+            )
+            segments_samples = _split_by_max_duration(
+                segments_samples, sr, max_segment_sec
+            )
+
         segments: List[AudioChunk] = []
         for idx, (start, end) in enumerate(segments_samples):
             seg_y = y[start:end]
