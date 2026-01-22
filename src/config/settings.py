@@ -55,16 +55,16 @@ class Settings(BaseSettings):
     VAD_TENVAD_HOP_SIZE: int = 256  # Frame hop size for TEN VAD
 
     # Silero VAD settings
-    VAD_SILERO_THRESHOLD: float = 0.2  # VAD threshold (0-1), lower = more sensitive
+    VAD_SILERO_THRESHOLD: float = 0.15  # VAD threshold (0-1), lower = more sensitive
     VAD_SILERO_MIN_SPEECH_MS: int = 200  # Minimum speech duration (milliseconds)
-    VAD_SILERO_MIN_SILENCE_MS: int = 500  # Minimum silence to split (milliseconds)
+    VAD_SILERO_MIN_SILENCE_MS: int = 800  # Minimum silence to split (milliseconds)
     VAD_SILERO_SPEECH_PAD_MS: int = 200  # Padding around speech (milliseconds)
 
     # Common VAD settings
     VAD_MIN_SPEECH_DURATION: float = 0.3  # Minimum speech duration (seconds)
-    MIN_SILENCE_DURATION: float = 0.6  # Minimum silence to split (seconds)
-    VAD_PADDING_SECONDS: float = 0.2  # Padding around speech regions
-    VAD_MERGE_GAP_SECONDS: float = 0.8  # Merge segments when gap <= this value
+    MIN_SILENCE_DURATION: float = 0.9  # Minimum silence to split (seconds)
+    VAD_PADDING_SECONDS: float = 0.3  # Padding around speech regions
+    VAD_MERGE_GAP_SECONDS: float = 1.2  # Merge segments when gap <= this value
 
     # Server Configuration
     SERVER_PORT: int = 3000
