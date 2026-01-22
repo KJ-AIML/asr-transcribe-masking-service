@@ -161,6 +161,7 @@ def _mp_transcribe_chunked(
         f"[MP Worker {device}] Chunked transcription for {channel_label} at {chunked_start:.2f}"
     )
 
+    merge_gap_sec = 1.0 if channel_label == "Agent" else None
     segment_info = vad_segment_audio_bytes(
         wav_bytes=audio_bytes,
         target_sr=16_000,
@@ -178,6 +179,7 @@ def _mp_transcribe_chunked(
         silero_min_speech_ms=settings.VAD_SILERO_MIN_SPEECH_MS,
         silero_min_silence_ms=settings.VAD_SILERO_MIN_SILENCE_MS,
         silero_speech_pad_ms=settings.VAD_SILERO_SPEECH_PAD_MS,
+        merge_gap_sec=merge_gap_sec,
     )
 
     print(

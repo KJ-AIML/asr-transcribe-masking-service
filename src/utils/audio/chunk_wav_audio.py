@@ -1,4 +1,5 @@
 from typing import Dict, Any, List, Generator, Tuple
+import math
 import numpy as np
 import io
 import librosa
@@ -83,6 +84,72 @@ class AudioChunk:
             "duration_sec": float(self.duration_sec),
             "sample_rate": self.sample_rate,
         }
+
+
+def _pad_regions(
+    regions: List[Tuple[float, float]],
+    pad_sec: float,
+    total_duration: float,
+) -> List[Tuple[float, float]]:
+    if not regions or pad_sec <= 0:
+        return regions
+    padded: List[Tuple[float, float]] = []
+    for start_sec, end_sec in regions:
+        padded_start = max(0.0, start_sec - pad_sec)
+        padded_end = min(total_duration, end_sec + pad_sec)
+        if padded_end > padded_start:
+            padded.append((padded_start, padded_end))
+    return padded
+
+
+def _merge_regions(
+    regions: List[Tuple[float, float]],
+    merge_gap_sec: float | None,
+) -> List[Tuple[float, float]]:
+    if not regions:
+        return []
+    regions_sorted = sorted(regions, key=lambda r: r[0])
+    merged: List[Tuple[float, float]] = [regions_sorted[0]]
+    for start_sec, end_sec in regions_sorted[1:]:
+        prev_start, prev_end = merged[-1]
+        gap = start_sec - prev_end
+        if start_sec <= prev_end or (merge_gap_sec is not None and gap <= merge_gap_sec):
+            merged[-1] = (prev_start, max(prev_end, end_sec))
+        else:
+            merged.append((start_sec, end_sec))
+    return merged
+
+
+def _regions_to_segments_samples(
+    regions: List[Tuple[float, float]],
+    sr: int,
+    total_samples: int,
+    min_speech_sec: float,
+    max_segment_sec: float,
+) -> List[Tuple[int, int]]:
+    segments_samples: List[Tuple[int, int]] = []
+    if not regions:
+        return segments_samples
+    max_samples = int(math.ceil(max_segment_sec * sr))
+    for start_sec, end_sec in regions:
+        start_sample = int(math.floor(start_sec * sr))
+        end_sample = int(math.ceil(end_sec * sr))
+        start_sample = max(0, min(total_samples, start_sample))
+        end_sample = max(0, min(total_samples, end_sample))
+        duration_sec = (end_sample - start_sample) / sr
+        if duration_sec < min_speech_sec:
+            continue
+        if duration_sec <= max_segment_sec:
+            if end_sample > start_sample:
+                segments_samples.append((start_sample, end_sample))
+            continue
+        current = start_sample
+        while current < end_sample:
+            seg_end = min(current + max_samples, end_sample)
+            if seg_end > current:
+                segments_samples.append((current, seg_end))
+            current = seg_end
+    return segments_samples
 
 
 def chunk_wav_audio_bytes(
@@ -302,6 +369,7 @@ def vad_segment_audio_bytes(
     silero_min_speech_ms: int = 300,  # Min speech duration (ms)
     silero_min_silence_ms: int = 200,  # Min silence duration (ms)
     silero_speech_pad_ms: int = 100,  # Speech padding (ms)
+    merge_gap_sec: float | None = None,  # Merge segments if gap <= this (sec)
 ) -> Dict[str, Any]:
     try:
         buffer = io.BytesIO(wav_bytes)
@@ -362,7 +430,7 @@ def vad_segment_audio_bytes(
                         speech_flags.append(bool(is_speech))
                         frame_bounds.append((start_time, end_time))
 
-                    # Convert frames to speech regions with min_speech and min_silence filtering
+                    # Convert frames to speech regions with min_silence filtering
                     regions: List[Tuple[float, float]] = []
                     current_start: float | None = None
                     last_speech_end: float | None = None
@@ -385,56 +453,26 @@ def vad_segment_audio_bytes(
                         gap = max(0.0, frame_start - last_speech_end)
                         if gap >= min_silence_sec:
                             duration = last_speech_end - current_start
-                            if duration >= min_speech_sec:
-                                # Apply padding
-                                padded_start = max(0.0, current_start - vad_padding)
-                                padded_end = min(
-                                    total_duration, last_speech_end + vad_padding
-                                )
-                                regions.append((padded_start, padded_end))
+                            if duration > 0:
+                                regions.append((current_start, last_speech_end))
                             current_start = None
                             last_speech_end = None
 
                     # Handle speech at end of audio
                     if current_start is not None and last_speech_end is not None:
                         duration = last_speech_end - current_start
-                        if duration >= min_speech_sec:
-                            padded_start = max(0.0, current_start - vad_padding)
-                            padded_end = min(
-                                total_duration, last_speech_end + vad_padding
-                            )
-                            regions.append((padded_start, padded_end))
+                        if duration > 0:
+                            regions.append((current_start, last_speech_end))
 
-                    # Merge overlapping regions
-                    if regions:
-                        regions = sorted(regions, key=lambda r: r[0])
-                        merged_regions: List[Tuple[float, float]] = [regions[0]]
-                        for region in regions[1:]:
-                            prev = merged_regions[-1]
-                            if region[0] <= prev[1]:
-                                # Overlapping, merge
-                                merged_regions[-1] = (prev[0], max(prev[1], region[1]))
-                            else:
-                                merged_regions.append(region)
-                        regions = merged_regions
-
-                    # Convert time regions to sample positions
-                    for start_sec, end_sec in regions:
-                        start_sample = int(start_sec * sr)
-                        end_sample = int(end_sec * sr)
-                        duration_sec = end_sec - start_sec
-
-                        if duration_sec <= max_segment_sec:
-                            segments_samples.append((start_sample, end_sample))
-                        else:
-                            # Split long segments
-                            max_samples = int(max_segment_sec * sr)
-                            current = start_sample
-                            while current < end_sample:
-                                seg_end = min(current + max_samples, end_sample)
-                                if seg_end > current:
-                                    segments_samples.append((current, seg_end))
-                                current = seg_end
+                    regions = _pad_regions(regions, vad_padding, total_duration)
+                    regions = _merge_regions(regions, merge_gap_sec)
+                    segments_samples = _regions_to_segments_samples(
+                        regions,
+                        sr,
+                        len(y),
+                        min_speech_sec,
+                        max_segment_sec,
+                    )
 
                     logger.info(
                         f"TEN VAD found {len(segments_samples)} speech segments"
@@ -455,25 +493,26 @@ def vad_segment_audio_bytes(
                         threshold=silero_threshold,
                         min_speech_duration_ms=silero_min_speech_ms,
                         min_silence_duration_ms=silero_min_silence_ms,
-                        speech_pad_ms=silero_speech_pad_ms,
+                        speech_pad_ms=0,
                     )
-
+                    regions = []
+                    pad_sec = max(0.0, silero_speech_pad_ms / 1000.0)
                     for ts in speech_ts:
-                        start = int(ts.get("start", 0))
-                        end = int(ts.get("end", start))
-                        duration_sec = (end - start) / sr
-                        if duration_sec < min_speech_sec:
+                        start = float(ts.get("start", 0)) / sr
+                        end = float(ts.get("end", 0)) / sr
+                        if end <= start:
                             continue
-                        if duration_sec <= max_segment_sec:
-                            segments_samples.append((start, end))
-                            continue
-                        max_samples = int(max_segment_sec * sr)
-                        current = start
-                        while current < end:
-                            seg_end = min(current + max_samples, end)
-                            if seg_end > current:
-                                segments_samples.append((current, seg_end))
-                            current = seg_end
+                        regions.append((start, end))
+
+                    regions = _pad_regions(regions, pad_sec, total_duration)
+                    regions = _merge_regions(regions, merge_gap_sec)
+                    segments_samples = _regions_to_segments_samples(
+                        regions,
+                        sr,
+                        len(y),
+                        min_speech_sec,
+                        max_segment_sec,
+                    )
 
                     logger.info(
                         f"Silero VAD found {len(segments_samples)} speech segments"
@@ -486,35 +525,17 @@ def vad_segment_audio_bytes(
                 segments_samples = []
         if not segments_samples:
             intervals = librosa.effects.split(y, top_db=top_db)
-            merged: List[Tuple[int, int]] = []
-            for start, end in intervals:
-                if not merged:
-                    merged.append((start, end))
-                    continue
-                last_start, last_end = merged[-1]
-                gap_sec = (start - last_end) / sr
-                if gap_sec < min_silence_sec:
-                    merged[-1] = (last_start, end)
-                else:
-                    merged.append((start, end))
-
-            if not segments_samples:
-                segments_samples = []
-
-            for start, end in merged:
-                duration_sec = (end - start) / sr
-                if duration_sec < min_speech_sec:
-                    continue
-                if duration_sec <= max_segment_sec:
-                    segments_samples.append((start, end))
-                    continue
-                max_samples = int(max_segment_sec * sr)
-                current = start
-                while current < end:
-                    seg_end = min(current + max_samples, end)
-                    if seg_end > current:
-                        segments_samples.append((current, seg_end))
-                    current = seg_end
+            regions = [(start / sr, end / sr) for start, end in intervals]
+            regions = _pad_regions(regions, vad_padding, total_duration)
+            regions = _merge_regions(regions, min_silence_sec)
+            regions = _merge_regions(regions, merge_gap_sec)
+            segments_samples = _regions_to_segments_samples(
+                regions,
+                sr,
+                len(y),
+                min_speech_sec,
+                max_segment_sec,
+            )
         segments: List[AudioChunk] = []
         for idx, (start, end) in enumerate(segments_samples):
             seg_y = y[start:end]
