@@ -59,11 +59,20 @@ class Settings(BaseSettings):
     VAD_SILERO_MIN_SPEECH_MS: int = 300  # Minimum speech duration (milliseconds)
     VAD_SILERO_MIN_SILENCE_MS: int = 200  # Minimum silence to split (milliseconds)
     VAD_SILERO_SPEECH_PAD_MS: int = 100  # Padding around speech (milliseconds)
+    VAD_SILERO_MIN_SILENCE_MS_AGENT: int | None = None  # Override for Agent channel
+    VAD_SILERO_MIN_SILENCE_MS_CALLER: int | None = None  # Override for Caller channel
+    VAD_MERGE_GAP_SEC_AGENT: float | None = 1.0  # Merge Agent segments if gap <= this
+    VAD_MERGE_GAP_SEC_CALLER: float | None = None  # Merge Caller segments if gap <= this
 
     # Common VAD settings
     VAD_MIN_SPEECH_DURATION: float = 0.3  # Minimum speech duration (seconds)
     MIN_SILENCE_DURATION: float = 0.2  # Minimum silence to split (seconds)
     VAD_PADDING_SECONDS: float = 0.1  # Padding around speech regions
+
+    # VAD debug logging
+    VAD_DEBUG_ENABLED: bool = True
+    VAD_DEBUG_WINDOW_START: float | None = None
+    VAD_DEBUG_WINDOW_END: float | None = None
 
     # Server Configuration
     SERVER_PORT: int = 3000

@@ -120,6 +120,21 @@ def _merge_regions(
     return merged
 
 
+def _filter_regions_by_window(
+    regions: List[Tuple[float, float]],
+    window_start: float | None,
+    window_end: float | None,
+) -> List[Tuple[float, float]]:
+    if not regions or window_start is None or window_end is None:
+        return []
+    filtered: List[Tuple[float, float]] = []
+    for start_sec, end_sec in regions:
+        if end_sec < window_start or start_sec > window_end:
+            continue
+        filtered.append((start_sec, end_sec))
+    return filtered
+
+
 def _regions_to_segments_samples(
     regions: List[Tuple[float, float]],
     sr: int,
@@ -370,6 +385,9 @@ def vad_segment_audio_bytes(
     silero_min_silence_ms: int = 200,  # Min silence duration (ms)
     silero_speech_pad_ms: int = 100,  # Speech padding (ms)
     merge_gap_sec: float | None = None,  # Merge segments if gap <= this (sec)
+    debug_window_start: float | None = None,
+    debug_window_end: float | None = None,
+    debug_label: str | None = None,
 ) -> Dict[str, Any]:
     try:
         buffer = io.BytesIO(wav_bytes)
@@ -464,8 +482,25 @@ def vad_segment_audio_bytes(
                         if duration > 0:
                             regions.append((current_start, last_speech_end))
 
+                    if debug_window_start is not None and debug_window_end is not None:
+                        raw_regions = _filter_regions_by_window(
+                            regions, debug_window_start, debug_window_end
+                        )
+                        if raw_regions:
+                            logger.info(
+                                f"VAD[{debug_label}] TEN regions raw (window {debug_window_start:.2f}-{debug_window_end:.2f}): {raw_regions}"
+                            )
+
                     regions = _pad_regions(regions, vad_padding, total_duration)
                     regions = _merge_regions(regions, merge_gap_sec)
+                    if debug_window_start is not None and debug_window_end is not None:
+                        merged_regions = _filter_regions_by_window(
+                            regions, debug_window_start, debug_window_end
+                        )
+                        if merged_regions:
+                            logger.info(
+                                f"VAD[{debug_label}] TEN regions merged (window {debug_window_start:.2f}-{debug_window_end:.2f}): {merged_regions}"
+                            )
                     segments_samples = _regions_to_segments_samples(
                         regions,
                         sr,
@@ -504,8 +539,25 @@ def vad_segment_audio_bytes(
                             continue
                         regions.append((start, end))
 
+                    if debug_window_start is not None and debug_window_end is not None:
+                        raw_regions = _filter_regions_by_window(
+                            regions, debug_window_start, debug_window_end
+                        )
+                        if raw_regions:
+                            logger.info(
+                                f"VAD[{debug_label}] Silero regions raw (window {debug_window_start:.2f}-{debug_window_end:.2f}): {raw_regions}"
+                            )
+
                     regions = _pad_regions(regions, pad_sec, total_duration)
                     regions = _merge_regions(regions, merge_gap_sec)
+                    if debug_window_start is not None and debug_window_end is not None:
+                        merged_regions = _filter_regions_by_window(
+                            regions, debug_window_start, debug_window_end
+                        )
+                        if merged_regions:
+                            logger.info(
+                                f"VAD[{debug_label}] Silero regions merged (window {debug_window_start:.2f}-{debug_window_end:.2f}): {merged_regions}"
+                            )
                     segments_samples = _regions_to_segments_samples(
                         regions,
                         sr,
@@ -529,6 +581,14 @@ def vad_segment_audio_bytes(
             regions = _pad_regions(regions, vad_padding, total_duration)
             regions = _merge_regions(regions, min_silence_sec)
             regions = _merge_regions(regions, merge_gap_sec)
+            if debug_window_start is not None and debug_window_end is not None:
+                merged_regions = _filter_regions_by_window(
+                    regions, debug_window_start, debug_window_end
+                )
+                if merged_regions:
+                    logger.info(
+                        f"VAD[{debug_label}] Energy regions merged (window {debug_window_start:.2f}-{debug_window_end:.2f}): {merged_regions}"
+                    )
             segments_samples = _regions_to_segments_samples(
                 regions,
                 sr,
@@ -541,6 +601,11 @@ def vad_segment_audio_bytes(
             seg_y = y[start:end]
             start_sec = start / sr
             end_sec = end / sr
+            if debug_window_start is not None and debug_window_end is not None:
+                if not (end_sec < debug_window_start or start_sec > debug_window_end):
+                    logger.info(
+                        f"VAD[{debug_label}] CUT segment {idx}: {start_sec:.2f}-{end_sec:.2f} (samples {start}-{end})"
+                    )
             segments.append(
                 AudioChunk(
                     chunk_index=idx,

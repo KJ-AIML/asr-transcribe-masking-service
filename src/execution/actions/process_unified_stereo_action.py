@@ -161,7 +161,27 @@ def _mp_transcribe_chunked(
         f"[MP Worker {device}] Chunked transcription for {channel_label} at {chunked_start:.2f}"
     )
 
-    merge_gap_sec = 1.0 if channel_label == "Agent" else None
+    if channel_label == "Agent":
+        merge_gap_sec = settings.VAD_MERGE_GAP_SEC_AGENT
+        silero_min_silence_ms = (
+            settings.VAD_SILERO_MIN_SILENCE_MS_AGENT
+            if settings.VAD_SILERO_MIN_SILENCE_MS_AGENT is not None
+            else settings.VAD_SILERO_MIN_SILENCE_MS
+        )
+    else:
+        merge_gap_sec = settings.VAD_MERGE_GAP_SEC_CALLER
+        silero_min_silence_ms = (
+            settings.VAD_SILERO_MIN_SILENCE_MS_CALLER
+            if settings.VAD_SILERO_MIN_SILENCE_MS_CALLER is not None
+            else settings.VAD_SILERO_MIN_SILENCE_MS
+        )
+
+    debug_window_start = (
+        settings.VAD_DEBUG_WINDOW_START if settings.VAD_DEBUG_ENABLED else None
+    )
+    debug_window_end = (
+        settings.VAD_DEBUG_WINDOW_END if settings.VAD_DEBUG_ENABLED else None
+    )
     segment_info = vad_segment_audio_bytes(
         wav_bytes=audio_bytes,
         target_sr=16_000,
@@ -177,9 +197,12 @@ def _mp_transcribe_chunked(
         # Silero VAD parameters
         silero_threshold=settings.VAD_SILERO_THRESHOLD,
         silero_min_speech_ms=settings.VAD_SILERO_MIN_SPEECH_MS,
-        silero_min_silence_ms=settings.VAD_SILERO_MIN_SILENCE_MS,
+        silero_min_silence_ms=silero_min_silence_ms,
         silero_speech_pad_ms=settings.VAD_SILERO_SPEECH_PAD_MS,
         merge_gap_sec=merge_gap_sec,
+        debug_window_start=debug_window_start,
+        debug_window_end=debug_window_end,
+        debug_label=channel_label,
     )
 
     print(
