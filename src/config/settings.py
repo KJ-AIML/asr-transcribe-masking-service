@@ -64,7 +64,7 @@ class Settings(BaseSettings):
     VAD_MIN_SPEECH_DURATION: float = 0.15  # Keep short utterances
     MIN_SILENCE_DURATION: float = 0.7  # Split less aggressively
     VAD_PADDING_SECONDS: float = 0.4  # More padding around speech regions
-    VAD_MERGE_GAP_SECONDS: float = 1.5  # Merge nearby segments more often
+    VAD_MERGE_GAP_SECONDS: float = 1  # Merge nearby segments more often
     VAD_FALLBACK_ON_ERROR: bool = True  # Use energy VAD only if ML VAD errors
     VAD_FALLBACK_ON_EMPTY: bool = False  # If ML VAD returns no speech, keep empty
     VAD_NORMALIZE: bool = True  # Normalize audio before VAD
