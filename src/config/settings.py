@@ -51,20 +51,22 @@ class Settings(BaseSettings):
     USE_ML_VAD: bool = True  # Enable VAD to filter silence before transcription
     VAD_ENGINE: str = "silero"  # Options: "silero", "ten"
     # TEN VAD settings
-    VAD_TENVAD_THRESHOLD: float = 0.3  # Typhoon BE default
+    VAD_TENVAD_THRESHOLD: float = 0.25  # Slightly more sensitive (reduce missed speech)
     VAD_TENVAD_HOP_SIZE: int = 256  # Frame hop size for TEN VAD
 
     # Silero VAD settings
-    VAD_SILERO_THRESHOLD: float = 0.15  # VAD threshold (0-1), lower = more sensitive
-    VAD_SILERO_MIN_SPEECH_MS: int = 200  # Minimum speech duration (milliseconds)
-    VAD_SILERO_MIN_SILENCE_MS: int = 800  # Minimum silence to split (milliseconds)
-    VAD_SILERO_SPEECH_PAD_MS: int = 200  # Padding around speech (milliseconds)
+    VAD_SILERO_THRESHOLD: float = 0.12  # More sensitive to soft speech
+    VAD_SILERO_MIN_SPEECH_MS: int = 150  # Keep short words
+    VAD_SILERO_MIN_SILENCE_MS: int = 600  # Split less aggressively
+    VAD_SILERO_SPEECH_PAD_MS: int = 300  # Extra head/tail padding
 
     # Common VAD settings
-    VAD_MIN_SPEECH_DURATION: float = 0.3  # Minimum speech duration (seconds)
-    MIN_SILENCE_DURATION: float = 0.9  # Minimum silence to split (seconds)
-    VAD_PADDING_SECONDS: float = 0.3  # Padding around speech regions
-    VAD_MERGE_GAP_SECONDS: float = 1.2  # Merge segments when gap <= this value
+    VAD_MIN_SPEECH_DURATION: float = 0.2  # Keep short utterances
+    MIN_SILENCE_DURATION: float = 0.7  # Split less aggressively
+    VAD_PADDING_SECONDS: float = 0.4  # More padding around speech regions
+    VAD_MERGE_GAP_SECONDS: float = 1.5  # Merge nearby segments more often
+    VAD_FALLBACK_ON_ERROR: bool = True  # Use energy VAD only if ML VAD errors
+    VAD_FALLBACK_ON_EMPTY: bool = False  # If ML VAD returns no speech, keep empty
 
     # Server Configuration
     SERVER_PORT: int = 3000

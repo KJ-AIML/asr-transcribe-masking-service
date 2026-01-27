@@ -52,7 +52,9 @@ class ProcessFile2ChooseModelUseCase:
                 )
 
             # Second try: chunk_dict at the root level
-            elif "chunk_dict" in json_data and isinstance(json_data["chunk_dict"], dict):
+            elif "chunk_dict" in json_data and isinstance(
+                json_data["chunk_dict"], dict
+            ):
                 chunk_dict = json_data["chunk_dict"]
                 logger.info(
                     f"Found chunk_dict at root level with {len(chunk_dict)} chunks"

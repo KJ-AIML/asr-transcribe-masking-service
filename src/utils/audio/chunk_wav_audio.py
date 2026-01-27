@@ -303,6 +303,8 @@ def vad_segment_audio_bytes(
     silero_min_speech_ms: int = 300,  # Min speech duration (ms)
     silero_min_silence_ms: int = 200,  # Min silence duration (ms)
     silero_speech_pad_ms: int = 100,  # Speech padding (ms)
+    fallback_on_error: bool = True,  # Use energy VAD if ML VAD errors
+    fallback_on_empty: bool = False,  # Use energy VAD if ML VAD returns no speech
 ) -> Dict[str, Any]:
     def _merge_segments_by_gap(
         segments: List[Tuple[int, int]],
@@ -356,6 +358,7 @@ def vad_segment_audio_bytes(
             }
         total_duration = float(len(y) / sr)
         segments_samples: List[Tuple[int, int]] = []
+        ml_vad_error = False
 
         if use_ml_vad:
             try:
@@ -502,7 +505,20 @@ def vad_segment_audio_bytes(
                     f"Error in ML VAD ({vad_engine}), falling back to energy VAD: {e}"
                 )
                 segments_samples = []
+                ml_vad_error = True
+
+        use_energy_fallback = False
         if not segments_samples:
+            if not use_ml_vad:
+                use_energy_fallback = True
+            elif ml_vad_error and fallback_on_error:
+                use_energy_fallback = True
+            elif fallback_on_empty:
+                use_energy_fallback = True
+            else:
+                logger.info("ML VAD returned no speech; skipping energy fallback")
+
+        if use_energy_fallback:
             intervals = librosa.effects.split(y, top_db=top_db)
             merged: List[Tuple[int, int]] = []
             for start, end in intervals:
@@ -516,13 +532,14 @@ def vad_segment_audio_bytes(
                 else:
                     merged.append((start, end))
 
-            if not segments_samples:
-                segments_samples = []
-
             for start, end in merged:
                 duration_sec = (end - start) / sr
                 if duration_sec < min_speech_sec:
                     continue
+                if vad_padding > 0:
+                    pad_samples = int(vad_padding * sr)
+                    start = max(0, start - pad_samples)
+                    end = min(len(y), end + pad_samples)
                 segments_samples.append((start, end))
 
         if segments_samples:
