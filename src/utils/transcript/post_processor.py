@@ -71,14 +71,20 @@ class TranscriptPostProcessor:
             last_word = merged[-1]
             w_start = float(w.get("start", 0))
             last_end = float(last_word.get("end", 0))
+            prev_text = last_word.get("word", "").strip().lower()
+            curr_text = w.get("word", "").strip().lower()
+            same_speaker = last_word.get("speaker") == w.get("speaker")
+            same_word = prev_text != "" and prev_text == curr_text
 
             if w_start >= last_end - self.overlap_tolerance:
                 merged.append(w)
-            else:
+            elif same_word and same_speaker:
                 logger.debug(
                     f"Skipping overlapping word: '{w.get('word')}' "
                     f"(start={w_start:.3f}, last_end={last_end:.3f})"
                 )
+            else:
+                merged.append(w)
 
         return merged
 

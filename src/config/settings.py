@@ -55,13 +55,13 @@ class Settings(BaseSettings):
     VAD_TENVAD_HOP_SIZE: int = 256  # Frame hop size for TEN VAD
 
     # Silero VAD settings
-    VAD_SILERO_THRESHOLD: float = 0.35  # Balanced sensitivity for production
-    VAD_SILERO_MIN_SPEECH_MS: int = 200  # Keep short words, avoid noise blips
+    VAD_SILERO_THRESHOLD: float = 0.30  # Balanced sensitivity for production
+    VAD_SILERO_MIN_SPEECH_MS: int = 150  # Keep short words, avoid noise blips
     VAD_SILERO_MIN_SILENCE_MS: int = 400  # Balanced split behavior
-    VAD_SILERO_SPEECH_PAD_MS: int = 200  # Guard against cutting tokens
+    VAD_SILERO_SPEECH_PAD_MS: int = 250  # Guard against cutting tokens
 
     # Common VAD settings
-    VAD_MIN_SPEECH_DURATION: float = 0.2  # Keep short utterances
+    VAD_MIN_SPEECH_DURATION: float = 0.15  # Keep short utterances
     MIN_SILENCE_DURATION: float = 0.7  # Split less aggressively
     VAD_PADDING_SECONDS: float = 0.4  # More padding around speech regions
     VAD_MERGE_GAP_SECONDS: float = 1.5  # Merge nearby segments more often
