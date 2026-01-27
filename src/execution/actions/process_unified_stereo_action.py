@@ -181,6 +181,9 @@ def _mp_transcribe_chunked(
         silero_speech_pad_ms=settings.VAD_SILERO_SPEECH_PAD_MS,
         fallback_on_error=settings.VAD_FALLBACK_ON_ERROR,
         fallback_on_empty=settings.VAD_FALLBACK_ON_EMPTY,
+        normalize=settings.VAD_NORMALIZE,
+        log_segments=settings.VAD_LOG_SEGMENTS,
+        log_max_segments=settings.VAD_LOG_MAX_SEGMENTS,
     )
 
     print(

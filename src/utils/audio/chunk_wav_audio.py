@@ -305,6 +305,9 @@ def vad_segment_audio_bytes(
     silero_speech_pad_ms: int = 100,  # Speech padding (ms)
     fallback_on_error: bool = True,  # Use energy VAD if ML VAD errors
     fallback_on_empty: bool = False,  # Use energy VAD if ML VAD returns no speech
+    normalize: bool = True,  # Normalize audio before VAD
+    log_segments: bool = False,  # Log segment boundaries
+    log_max_segments: int = 50,  # Max segments to log
 ) -> Dict[str, Any]:
     def _merge_segments_by_gap(
         segments: List[Tuple[int, int]],
@@ -350,6 +353,10 @@ def vad_segment_audio_bytes(
         if sr != target_sr:
             y = librosa.resample(y, orig_sr=sr, target_sr=target_sr)
             sr = target_sr
+        if normalize:
+            peak = float(np.max(np.abs(y)))
+            if peak > 0:
+                y = y / peak
         if len(y) == 0:
             return {
                 "sample_rate": sr,
@@ -550,6 +557,14 @@ def vad_segment_audio_bytes(
             segments_samples = _split_by_max_duration(
                 segments_samples, sr, max_segment_sec
             )
+            if log_segments:
+                max_items = max(0, int(log_max_segments))
+                for idx, (start, end) in enumerate(segments_samples[:max_items]):
+                    logger.info(f"VAD segment {idx}: {start / sr:.2f}-{end / sr:.2f}s")
+                if len(segments_samples) > max_items:
+                    logger.info(
+                        f"VAD segments truncated: {len(segments_samples) - max_items} more"
+                    )
 
         segments: List[AudioChunk] = []
         for idx, (start, end) in enumerate(segments_samples):
